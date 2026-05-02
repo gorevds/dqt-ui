@@ -56,11 +56,14 @@ def test_pipeline_html_report(binary_df):
         feature_kinds={"x_num": "numeric"}, granularity="month",
     )
     blocks = []
+    order = ("bin_shares", "rate_over_time", "rate_summary",
+             "distribution", "missingness", "psi", "outliers")
     for blk in result["features"]:
+        figs_dict = blk["figs"]
         blocks.append({
             "feature": blk["feature"],
             "summary": blk["summary"],
-            "figs": [f for f in blk["figs"] if f is not None],
+            "figs": [figs_dict[k] for k in order if figs_dict.get(k) is not None],
         })
     html = build_html_report(
         title="test", time_col="date", target_col="target", feature_blocks=blocks,
