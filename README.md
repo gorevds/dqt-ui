@@ -1,0 +1,120 @@
+# DQT — Data Quality Tool
+
+A self-contained interactive UI for evaluating dataset quality through:
+
+- **Feature distribution over time** — quantile bands for numerics, stacked share for categoricals.
+- **Target rate over time, per tree-binned bucket** — see whether the relationship between each feature and the target is stable.
+- **Auxiliary checks** — PSI vs reference window, missingness, outlier share, type-consistency.
+- **Standalone HTML report** — single self-contained file for sharing or auditing.
+
+Built as a flexible standalone tool extracted from a larger scoring pipeline. Designed to work on **any tabular dataset** with a time column, a target column, and one or more feature columns. Supports binary, multiclass, and regression targets.
+
+![nav](https://img.shields.io/badge/python-3.9%2B-blue) ![dash](https://img.shields.io/badge/dash-2.x-1f6feb) ![license](https://img.shields.io/badge/license-MIT-green)
+
+---
+
+## Quickstart (local)
+
+```bash
+git clone https://github.com/gorevds/DQT-UI.git
+cd DQT-UI
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+dqt    # serves on http://localhost:8050
+```
+
+Open `http://localhost:8050`, drop a CSV / Parquet file, and walk through the four steps:
+
+1. **Upload** — drag-and-drop CSV or Parquet (up to 250 MB).
+2. **Columns** — pick time / target / feature columns. Granularity and target type are auto-detected.
+3. **Settings** — choose binning method (tree / quantile), max bins, time granularity, PSI reference, outlier method.
+4. **Report** — interactive plots per feature, plus a single-file HTML export.
+
+## Quickstart (Docker)
+
+```bash
+docker build -t dqt .
+docker run --rm -p 8050:8050 dqt
+```
+
+## Production deploy (single server, nginx + Let's Encrypt)
+
+The `deploy/install.sh` script provisions a fresh Ubuntu 22.04+ / Debian 12+ host:
+
+```bash
+ssh root@your-server
+DOMAIN=dqt.example.com REPO=https://github.com/gorevds/DQT-UI.git \
+  bash <(curl -fsSL https://raw.githubusercontent.com/gorevds/DQT-UI/main/deploy/install.sh)
+```
+
+It:
+- Installs Python venv, nginx, certbot.
+- Clones the repo to `/opt/dqt`, builds a venv, installs the package.
+- Drops a `systemd` unit running gunicorn on `127.0.0.1:8050`.
+- Configures nginx as a reverse proxy.
+- Obtains a Let's Encrypt cert with auto-renew.
+
+After install:
+
+```bash
+systemctl status dqt
+journalctl -u dqt -f
+```
+
+## Architecture
+
+```
+dqt/
+├── core/        # pure-pandas / sklearn computations (no UI)
+│   ├── grouping.py        # TreeBinner: tree / quantile / manual binning
+│   ├── quality.py         # PSI, target-rate-per-bin, distribution-over-time
+│   ├── checks.py          # missingness, cardinality, outliers, type drift
+│   ├── time_utils.py      # auto-bucket time columns to day/week/month/quarter/year
+│   └── target_utils.py    # auto-detect binary / multiclass / regression
+├── plots/       # plotly figure builders (no callbacks)
+├── report/      # standalone HTML export
+└── app/         # Dash UI
+    ├── main.py            # app factory + callbacks
+    ├── pages/...          # per-screen layouts
+    ├── pipeline.py        # orchestrates core + plots
+    ├── store.py           # in-memory session store (no disk persistence)
+    └── io.py              # upload parsing
+```
+
+The `core` and `plots` packages are usable on their own without any Dash dependency:
+
+```python
+import pandas as pd
+from dqt.core import bucket_time, fit_binner, bins_target_rate_over_time, TargetKind
+from dqt.plots import plot_target_rate_per_bin_over_time
+
+df = pd.read_csv("loans.csv")
+df["bucket"] = bucket_time(df["snapshot_date"], granularity="month")
+
+binner = fit_binner(df, features=["amt_credit"], target_col="default",
+                    target_kind=TargetKind.BINARY, max_bins=5)
+binned = binner.transform(df[["amt_credit"]])
+binned["bucket"] = df["bucket"]
+binned["default"] = df["default"]
+
+rate = bins_target_rate_over_time(binned, "amt_credit", "default", "bucket", TargetKind.BINARY)
+fig = plot_target_rate_per_bin_over_time(rate, "amt_credit", "bucket")
+fig.write_html("amt_credit.html")
+```
+
+## Tests
+
+```bash
+pip install -e .[test]
+pytest
+```
+
+CI runs against Python 3.10 / 3.11 / 3.12 on every push and PR.
+
+## Data privacy
+
+Uploaded data lives in **server process memory only**. There is no disk persistence, no upload directory, no logs of dataset content. Sessions auto-expire after 4 hours of inactivity, and a server restart wipes everything. The `gunicorn` config uses a single worker so all requests in one browser session land on the same in-memory store; if you need to scale to multiple workers, swap `dqt/app/store.py` for a Redis-backed implementation.
+
+## License
+
+MIT.

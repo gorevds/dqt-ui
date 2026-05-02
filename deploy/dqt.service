@@ -1,0 +1,23 @@
+[Unit]
+Description=DQT — Data Quality Tool (gunicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/dqt
+Environment="PATH=/opt/dqt/.venv/bin"
+Environment="DQT_HOST=127.0.0.1"
+Environment="DQT_PORT=8050"
+ExecStart=/opt/dqt/.venv/bin/gunicorn \
+    --workers 1 \
+    --timeout 180 \
+    --bind 127.0.0.1:8050 \
+    dqt.app.main:server
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
