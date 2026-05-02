@@ -320,6 +320,11 @@ def _register_callbacks(app: Dash):
     # ---- Reset session (logo OR button) ----------------------------------
     # Also re-renders the page in case the user is already on /upload — pure
     # url update would be a no-op there.
+    #
+    # IMPORTANT: dynamically mounted components (reset-session appears only
+    # after upload) trigger their Input callbacks once on mount with n_clicks
+    # initialised to 0. We must reject such mount-fires by requiring the
+    # n_clicks counter for the actually-triggered button to be > 0.
     @app.callback(
         [Output("url", "pathname", allow_duplicate=True),
          Output("page", "children", allow_duplicate=True),
@@ -328,8 +333,13 @@ def _register_callbacks(app: Dash):
         State("sid", "data"),
         prevent_initial_call=True,
     )
-    def _reset(_n1, _n2, sid):
-        if not ctx.triggered_id:
+    def _reset(n_logo, n_btn, sid):
+        triggered = ctx.triggered_id
+        if triggered == "logo-reset" and not (n_logo or 0):
+            return no_update, no_update, no_update
+        if triggered == "reset-session" and not (n_btn or 0):
+            return no_update, no_update, no_update
+        if not triggered:
             return no_update, no_update, no_update
         if sid:
             STORE.reset(sid)

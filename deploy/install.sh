@@ -4,7 +4,7 @@
 # unit, configures nginx for $DOMAIN, and obtains a Let's Encrypt cert.
 #
 # Usage:
-#   DOMAIN=dqt.example.com REPO=https://github.com/USER/DQT-UI.git ./install.sh
+#   DOMAIN=dqt.example.com REPO=https://github.com/USER/dqt-ui.git ./install.sh
 #
 # Required env: DOMAIN, REPO
 # Optional env: EMAIL (for certbot, default admin@$DOMAIN), BRANCH (default main)

@@ -16,8 +16,8 @@ Designed to work on **any tabular dataset** with a time column, a target column,
 ## Quickstart (local)
 
 ```bash
-git clone https://github.com/gorevds/DQT-UI.git
-cd DQT-UI
+git clone https://github.com/gorevds/dqt-ui.git
+cd dqt-ui
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 dqt    # serves on http://localhost:8050
@@ -43,8 +43,8 @@ The `deploy/install.sh` script provisions a fresh Ubuntu 22.04+ / Debian 12+ hos
 
 ```bash
 ssh root@your-server
-DOMAIN=dqt.example.com REPO=https://github.com/gorevds/DQT-UI.git \
-  bash <(curl -fsSL https://raw.githubusercontent.com/gorevds/DQT-UI/main/deploy/install.sh)
+DOMAIN=dqt.example.com REPO=https://github.com/gorevds/dqt-ui.git \
+  bash <(curl -fsSL https://raw.githubusercontent.com/gorevds/dqt-ui/main/deploy/install.sh)
 ```
 
 It:
