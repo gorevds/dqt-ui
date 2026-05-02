@@ -47,9 +47,17 @@ def _layout():
         dcc.Store(id="sid", storage_type="session"),
         html.Div([
             html.Div([
-                html.Span("DQT", style={"fontWeight": 700, "fontSize": "20px",
-                                         "color": "#1f6feb", "marginRight": "12px"}),
-                html.Span("Data Quality Tool", style={"color": "#656d76", "fontSize": "13px"}),
+                # Click logo → reset session and go home.
+                html.Button(
+                    [html.Span("DQT", style={"fontWeight": 700, "fontSize": "20px",
+                                              "color": "#1f6feb", "marginRight": "12px"}),
+                     html.Span("Data Quality Tool",
+                               style={"color": "#656d76", "fontSize": "13px"})],
+                    id="logo-reset", n_clicks=0,
+                    title="Reset session and start over",
+                    style={"background": "transparent", "border": "none", "cursor": "pointer",
+                           "padding": 0, "display": "flex", "alignItems": "center"},
+                ),
             ], style={"display": "flex", "alignItems": "center"}),
             html.Div(id="nav", style={"display": "flex", "gap": "12px"}),
         ], style={"display": "flex", "justifyContent": "space-between", "alignItems": "center",
@@ -83,14 +91,31 @@ def _page_upload(sess):
                    "borderRadius": "6px", "textAlign": "center", "background": "#fff"},
             multiple=False, accept=".csv,.tsv,.txt,.parquet,.pq",
         ),
-        html.Div(id="upload-status", style={"marginTop": "16px"}),
+        html.Div(id="upload-status", style={"marginTop": "16px"},
+                  children=_upload_status_msg(sess) if has_data else ""),
         html.Div(_dataset_summary(sess) if has_data else "", id="dataset-summary"),
-        html.Div([
-            dcc.Link(html.Button("Continue → Columns", className="primary",
-                                  style=_btn_style(primary=True)), href="/columns")
-                if has_data else html.Div(),
-        ], style={"marginTop": "16px"}),
+        html.Div(id="continue-row", style={"marginTop": "16px", "display": "flex", "gap": "8px"},
+                 children=_upload_actions(has_data)),
     ])
+
+
+def _upload_status_msg(sess):
+    df = sess.df
+    return html.Div([
+        html.Span("✅ Loaded ", style={"color": "#1a7f37"}),
+        html.Span(f"{sess.filename}: {len(df):,} rows × {len(df.columns)} columns"),
+    ])
+
+
+def _upload_actions(has_data: bool):
+    if not has_data:
+        return []
+    return [
+        dcc.Link(html.Button("Continue → Columns", style=_btn_style(primary=True)),
+                 href="/columns"),
+        html.Button("⟲ Reset session", id="reset-session", n_clicks=0,
+                     style=_btn_style()),
+    ]
 
 
 def _dataset_summary(sess):
@@ -149,7 +174,6 @@ def _page_columns(sess):
             html.Button("Continue → Settings", id="columns-next", style=_btn_style(primary=True),
                         n_clicks=0),
         ], style={"marginTop": "16px", "display": "flex", "gap": "8px"}),
-        dcc.Location(id="columns-redirect", refresh=False),
     ])
 
 
@@ -213,7 +237,6 @@ def _page_settings(sess):
             html.Button("Run analysis →", id="settings-next", style=_btn_style(primary=True),
                         n_clicks=0),
         ], style={"marginTop": "24px", "display": "flex", "gap": "8px"}),
-        dcc.Location(id="settings-redirect", refresh=False),
     ])
 
 
@@ -274,7 +297,8 @@ def _register_callbacks(app: Dash):
     # ---- Upload ----------------------------------------------------------
     @app.callback(
         [Output("upload-status", "children"),
-         Output("dataset-summary", "children")],
+         Output("dataset-summary", "children"),
+         Output("continue-row", "children")],
         Input("upload", "contents"),
         State("upload", "filename"),
         State("sid", "data"),
@@ -285,16 +309,32 @@ def _register_callbacks(app: Dash):
         try:
             df = parse_upload(contents, filename)
         except ValueError as e:
-            return html.Div(f"❌ {e}", style={"color": "#cf222e"}), no_update
+            return html.Div(f"❌ {e}", style={"color": "#cf222e"}), no_update, no_update
         sess.df = df
         sess.filename = filename
         sess.columns_meta = {}
+        sess.settings = {}
         sess.report_cache = None
-        msg = html.Div([
-            html.Span("✅ Loaded ", style={"color": "#1a7f37"}),
-            html.Span(f"{filename}: {len(df):,} rows × {len(df.columns)} columns"),
-        ])
-        return msg, _dataset_summary(sess)
+        return _upload_status_msg(sess), _dataset_summary(sess), _upload_actions(True)
+
+    # ---- Reset session (logo OR button) ----------------------------------
+    # Also re-renders the page in case the user is already on /upload — pure
+    # url update would be a no-op there.
+    @app.callback(
+        [Output("url", "pathname", allow_duplicate=True),
+         Output("page", "children", allow_duplicate=True),
+         Output("nav", "children", allow_duplicate=True)],
+        [Input("logo-reset", "n_clicks"), Input("reset-session", "n_clicks")],
+        State("sid", "data"),
+        prevent_initial_call=True,
+    )
+    def _reset(_n1, _n2, sid):
+        if not ctx.triggered_id:
+            return no_update, no_update, no_update
+        if sid:
+            STORE.reset(sid)
+        sess = STORE.get_or_create(sid)
+        return "/upload", _page_upload(sess), _nav("upload", sess)
 
     # ---- Columns hints + select-all/clear --------------------------------
     @app.callback(Output("time-hint", "children"),
@@ -329,7 +369,8 @@ def _register_callbacks(app: Dash):
         return [c for c in sess.df.columns if c not in (t, tg)]
 
     @app.callback(
-        [Output("columns-error", "children"), Output("columns-redirect", "pathname")],
+        [Output("columns-error", "children"),
+         Output("url", "pathname", allow_duplicate=True)],
         Input("columns-next", "n_clicks"),
         [State("col-time", "value"), State("col-target", "value"),
          State("col-features", "value"), State("sid", "data")],
@@ -360,7 +401,7 @@ def _register_callbacks(app: Dash):
 
     # ---- Settings → Report ----------------------------------------------
     @app.callback(
-        Output("settings-redirect", "pathname"),
+        Output("url", "pathname", allow_duplicate=True),
         Input("settings-next", "n_clicks"),
         [State("opt-method", "value"), State("opt-max-bins", "value"),
          State("opt-min-leaf", "value"), State("opt-granularity", "value"),
