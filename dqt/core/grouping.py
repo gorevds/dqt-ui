@@ -1,6 +1,5 @@
 """Tree-based binning for numeric and categorical features.
 
-Adapted from the scoring-pipeline-master `cresco/grouping.py` but simplified:
   * single class TreeBinner with sklearn-style fit/transform
   * binary OR regression target (auto-routed via DecisionTreeClassifier /
     DecisionTreeRegressor)

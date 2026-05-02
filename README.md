@@ -7,7 +7,7 @@ A self-contained interactive UI for evaluating dataset quality through:
 - **Auxiliary checks** — PSI vs reference window, missingness, outlier share, type-consistency.
 - **Standalone HTML report** — single self-contained file for sharing or auditing.
 
-Built as a flexible standalone tool extracted from a larger scoring pipeline. Designed to work on **any tabular dataset** with a time column, a target column, and one or more feature columns. Supports binary, multiclass, and regression targets.
+Designed to work on **any tabular dataset** with a time column, a target column, and one or more feature columns. Supports binary, multiclass, and regression targets — useful for product analytics, marketing attribution, fraud, scoring, A/B follow-ups, sensor / IoT data, anywhere you need to spot whether features or outcomes drift over time.
 
 ![nav](https://img.shields.io/badge/python-3.9%2B-blue) ![dash](https://img.shields.io/badge/dash-2.x-1f6feb) ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -88,18 +88,18 @@ import pandas as pd
 from dqt.core import bucket_time, fit_binner, bins_target_rate_over_time, TargetKind
 from dqt.plots import plot_target_rate_per_bin_over_time
 
-df = pd.read_csv("loans.csv")
-df["bucket"] = bucket_time(df["snapshot_date"], granularity="month")
+df = pd.read_csv("events.csv")
+df["bucket"] = bucket_time(df["signup_date"], granularity="month")
 
-binner = fit_binner(df, features=["amt_credit"], target_col="default",
+binner = fit_binner(df, features=["session_minutes"], target_col="converted",
                     target_kind=TargetKind.BINARY, max_bins=5)
-binned = binner.transform(df[["amt_credit"]])
+binned = binner.transform(df[["session_minutes"]])
 binned["bucket"] = df["bucket"]
-binned["default"] = df["default"]
+binned["converted"] = df["converted"]
 
-rate = bins_target_rate_over_time(binned, "amt_credit", "default", "bucket", TargetKind.BINARY)
-fig = plot_target_rate_per_bin_over_time(rate, "amt_credit", "bucket")
-fig.write_html("amt_credit.html")
+rate = bins_target_rate_over_time(binned, "session_minutes", "converted", "bucket", TargetKind.BINARY)
+fig = plot_target_rate_per_bin_over_time(rate, "session_minutes", "bucket")
+fig.write_html("session_minutes.html")
 ```
 
 ## Tests
