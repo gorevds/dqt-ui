@@ -29,7 +29,7 @@ test = [
 ]
 
 [project.scripts]
-dqt = "dqt.app.main:run_cli"
+dqt = "dqt.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["dqt*"]

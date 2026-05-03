@@ -20,7 +20,8 @@ git clone https://github.com/gorevds/dqt-ui.git
 cd dqt-ui
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
-dqt    # serves on http://localhost:8050
+dqt serve                                    # interactive UI on :8050
+dqt analyze data.csv -o report.html          # headless one-shot HTML report
 ```
 
 Open `http://localhost:8050`, drop a CSV / Parquet file, and walk through the four steps:
