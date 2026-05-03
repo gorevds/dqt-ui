@@ -642,14 +642,23 @@ def _render_report_view(result, search: str = "", sort_by: str = "stability_desc
         ], style=row_style)
 
         outlier_fig = figs.get("outliers")
-        row2_items = [graph_cell(figs["bin_shares"])]
+        bin_shares_node = dcc.Graph(figure=figs["bin_shares"],
+                                      config={"displayModeBar": False})
         if outlier_fig is not None:
-            row2_items.append(graph_cell(outlier_fig))
-        rows = [row1, html.Div(row2_items, style=row_style)]
-        # Numeric features always run the outlier check; if it found nothing,
-        # bin_shares already took the full row above — append a thin badge.
-        if blk["kind"] == "numeric" and outlier_fig is None:
-            rows.append(_no_outliers_badge())
+            # Numeric with outliers — side-by-side, half width each.
+            bottom = html.Div([graph_cell(figs["bin_shares"]),
+                                graph_cell(outlier_fig)], style=row_style)
+        elif blk["kind"] == "numeric":
+            # Numeric without outliers — chart full width, badge stacked below.
+            bottom = html.Div([
+                html.Div(bin_shares_node, style={"width": "100%"}),
+                _no_outliers_badge(),
+            ], style={"marginBottom": "8px"})
+        else:
+            # Categorical — chart full width, no outlier check at all.
+            bottom = html.Div(bin_shares_node,
+                                style={"width": "100%", "marginBottom": "8px"})
+        rows = [row1, bottom]
 
         # Numeric bin labels are interval ranges and self-describing,
         # so we only need this disclosure for categorical bins.
@@ -721,7 +730,9 @@ def _no_outliers_badge():
     return html.Div("✓ No outliers detected.",
                      style={"color": "#1a7f37", "fontSize": "13px",
                             "padding": "8px 12px", "background": "#dafbe1",
-                            "borderRadius": "4px"})
+                            "borderRadius": "4px",
+                            "width": "100%", "boxSizing": "border-box",
+                            "marginTop": "8px"})
 
 
 def _summary_chips(summary):
