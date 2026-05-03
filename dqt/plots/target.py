@@ -107,14 +107,15 @@ def plot_target_rate_per_bin_over_time(rate_df, time_col: str, stability_df=None
                                  showlegend=False,
                                  hovertemplate="%{y:.3f}<extra>" + str(b) + "</extra>"))
 
+    has_stab = stability_df is not None and not stability_df.empty
     layout = dict(
-        title=_title("target rate per bin per date"),
+        title=_title("target rate per bin + stab" if has_stab else "target rate per bin"),
         xaxis_title=None, yaxis_title="target rate",
         yaxis=dict(tickformat=".3f"),
         hovermode="x unified", height=340, margin=dict(l=40, r=40, t=40, b=30),
         showlegend=False,
     )
-    if stability_df is not None and not stability_df.empty:
+    if has_stab:
         fig.add_trace(go.Scatter(
             x=stability_df[time_col].astype(str), y=stability_df["stability"],
             yaxis="y2", mode="lines", name="stability",
