@@ -41,7 +41,7 @@ from dqt.report.html_report import build_html_report
 # ---------------------------------------------------------------------------
 
 def create_app() -> Dash:
-    app = Dash(__name__, suppress_callback_exceptions=True, title="DQT — Data Quality Tool")
+    app = Dash(__name__, suppress_callback_exceptions=True, title="Data Quality Tool")
     app.layout = _layout()
     _register_callbacks(app)
     return app
@@ -55,14 +55,13 @@ def _layout():
             html.Div([
                 # Click logo → reset session and go home.
                 html.Button(
-                    [html.Span("DQT", style={"fontWeight": 700, "fontSize": "20px",
-                                              "color": "#1f6feb", "marginRight": "12px"}),
-                     html.Span("Data Quality Tool",
-                               style={"color": "#656d76", "fontSize": "13px"})],
+                    "Data Quality Tool",
                     id="logo-reset", n_clicks=0,
                     title="Reset session and start over",
                     style={"background": "transparent", "border": "none", "cursor": "pointer",
-                           "padding": 0, "display": "flex", "alignItems": "center"},
+                           "padding": 0, "fontWeight": 700, "fontSize": "20px",
+                           "color": "#1f6feb",
+                           "fontFamily": "inherit"},
                 ),
             ], style={"display": "flex", "alignItems": "center"}),
             html.Div(id="nav", style={"display": "flex", "gap": "12px"}),
