@@ -22,7 +22,7 @@ def palette_for(bins: list) -> dict:
 
 
 def plot_bin_shares_over_time(rate_df, feature: str, time_col: str) -> go.Figure:
-    """Stacked area: share of each bin per time bucket."""
+    """One line per bin: share of that bin in each time bucket (no fill)."""
     fig = go.Figure()
     if rate_df.empty:
         fig.update_layout(title="no data")
@@ -38,9 +38,10 @@ def plot_bin_shares_over_time(rate_df, feature: str, time_col: str) -> go.Figure
         if b not in shares.columns:
             continue
         fig.add_trace(go.Scatter(
-            x=x, y=shares[b], mode="lines", stackgroup="one", name=str(b),
-            line=dict(color=colors[b], width=0),
-            fillcolor=_rgba(colors[b], 0.65),
+            x=x, y=shares[b], mode="lines+markers", name=str(b),
+            line=dict(color=colors[b], width=2),
+            marker=dict(size=5, color=colors[b]),
+            showlegend=False,
             hovertemplate="%{y:.1%}<extra>" + str(b) + "</extra>",
         ))
     fig.update_layout(
@@ -48,6 +49,7 @@ def plot_bin_shares_over_time(rate_df, feature: str, time_col: str) -> go.Figure
         xaxis_title=None, yaxis_title="share",
         yaxis=dict(tickformat=".0%", range=[0, 1]),
         hovermode="x unified", height=340, margin=dict(l=40, r=20, t=40, b=30),
+        showlegend=False,
     )
     return fig
 
@@ -75,12 +77,14 @@ def plot_target_rate_per_bin_over_time(rate_df, feature: str, time_col: str) -> 
                                  showlegend=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=x, y=y, mode="lines+markers",
                                  name=str(b), line=dict(color=color, width=2),
+                                 showlegend=False,
                                  hovertemplate="%{y:.3f}<extra>" + str(b) + "</extra>"))
     fig.update_layout(
         title="target rate per bin over time",
         xaxis_title=None, yaxis_title="target rate",
         yaxis=dict(tickformat=".3f"),
         hovermode="x unified", height=340, margin=dict(l=40, r=20, t=40, b=30),
+        showlegend=False,
     )
     return fig
 
