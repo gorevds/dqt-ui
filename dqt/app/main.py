@@ -556,12 +556,13 @@ def _render_report_view(result):
     for blk in result["features"]:
         figs = blk["figs"]
         # Row 1 — three bin-related charts, equal width, same colour palette.
+        # Order: overall summary first (the "verdict"), then dynamics over time.
         row1 = html.Div([
-            html.Div(dcc.Graph(figure=figs["bin_shares"], config={"displayModeBar": False}),
+            html.Div(dcc.Graph(figure=figs["rate_summary"], config={"displayModeBar": False}),
                       style={"flex": "1 1 0", "minWidth": "0"}),
             html.Div(dcc.Graph(figure=figs["rate_over_time"], config={"displayModeBar": False}),
                       style={"flex": "1 1 0", "minWidth": "0"}),
-            html.Div(dcc.Graph(figure=figs["rate_summary"], config={"displayModeBar": False}),
+            html.Div(dcc.Graph(figure=figs["bin_shares"], config={"displayModeBar": False}),
                       style={"flex": "1 1 0", "minWidth": "0"}),
         ], style={"display": "flex", "gap": "8px", "marginBottom": "8px"})
 
@@ -624,7 +625,7 @@ def _build_html_data_url(result):
     import base64
     # Same row layout as the on-screen report: 3 bin-charts on top,
     # auxiliary checks in the middle, outliers full-width at the bottom.
-    order = ("bin_shares", "rate_over_time", "rate_summary",
+    order = ("rate_summary", "rate_over_time", "bin_shares",
              "distribution", "missingness", "psi", "outliers")
     feature_blocks = []
     for blk in result["features"]:
