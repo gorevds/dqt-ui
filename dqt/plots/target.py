@@ -60,7 +60,7 @@ def plot_bin_shares_over_time(rate_df, time_col: str, psi_df=None) -> go.Figure:
         fig.add_trace(go.Scatter(
             x=psi_x, y=psi_y,
             yaxis="y2", mode="lines", name="PSI",
-            line=dict(color="rgb(140, 140, 140)", width=1.5, dash="dot"),
+            line=dict(color="rgb(140, 140, 140)", width=1.5),
             showlegend=False,
             hovertemplate="PSI: %{y:.3f}<extra></extra>",
         ))
