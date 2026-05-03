@@ -25,7 +25,7 @@ def plot_bin_shares_over_time(rate_df, feature: str, time_col: str) -> go.Figure
     """Stacked area: share of each bin per time bucket."""
     fig = go.Figure()
     if rate_df.empty:
-        fig.update_layout(title=f"{feature}: no data")
+        fig.update_layout(title="no data")
         return fig
     bins = list(dict.fromkeys(rate_df["bin"].tolist()))
     colors = palette_for(bins)
@@ -44,10 +44,10 @@ def plot_bin_shares_over_time(rate_df, feature: str, time_col: str) -> go.Figure
             hovertemplate="%{y:.1%}<extra>" + str(b) + "</extra>",
         ))
     fig.update_layout(
-        title=f"{feature}: bin share over time",
-        xaxis_title=time_col, yaxis_title="share",
+        title="bin share over time",
+        xaxis_title=None, yaxis_title="share",
         yaxis=dict(tickformat=".0%", range=[0, 1]),
-        hovermode="x unified", height=340, margin=dict(l=40, r=20, t=50, b=40),
+        hovermode="x unified", height=340, margin=dict(l=40, r=20, t=40, b=30),
     )
     return fig
 
@@ -56,7 +56,7 @@ def plot_target_rate_per_bin_over_time(rate_df, feature: str, time_col: str) -> 
     """One line per bin: target rate over time with shaded ±SE bands."""
     fig = go.Figure()
     if rate_df.empty:
-        fig.update_layout(title=f"{feature}: no data")
+        fig.update_layout(title="no data")
         return fig
     bins = list(dict.fromkeys(rate_df["bin"].tolist()))
     colors = palette_for(bins)
@@ -74,11 +74,13 @@ def plot_target_rate_per_bin_over_time(rate_df, feature: str, time_col: str) -> 
                                  fill="tonexty", fillcolor=rgba_fill,
                                  showlegend=False, hoverinfo="skip"))
         fig.add_trace(go.Scatter(x=x, y=y, mode="lines+markers",
-                                 name=str(b), line=dict(color=color, width=2)))
+                                 name=str(b), line=dict(color=color, width=2),
+                                 hovertemplate="%{y:.3f}<extra>" + str(b) + "</extra>"))
     fig.update_layout(
-        title=f"{feature}: target rate per bin over time",
-        xaxis_title=time_col, yaxis_title="target rate",
-        hovermode="x unified", height=340, margin=dict(l=40, r=20, t=50, b=40),
+        title="target rate per bin over time",
+        xaxis_title=None, yaxis_title="target rate",
+        yaxis=dict(tickformat=".3f"),
+        hovermode="x unified", height=340, margin=dict(l=40, r=20, t=40, b=30),
     )
     return fig
 
@@ -87,7 +89,7 @@ def plot_bins_summary(rate_df, feature: str) -> go.Figure:
     """Bar of overall target rate per bin (per-bin colour) + count on 2nd axis."""
     fig = go.Figure()
     if rate_df.empty:
-        fig.update_layout(title=f"{feature}: no data")
+        fig.update_layout(title="no data")
         return fig
     summary = rate_df.groupby("bin", as_index=False).apply(
         lambda d: _wmean(d["rate"], d["count"])
@@ -101,18 +103,21 @@ def plot_bins_summary(rate_df, feature: str) -> go.Figure:
         name="target rate",
         marker_color=[colors[b] for b in bins],
         showlegend=False,
+        hovertemplate="%{x}: %{y:.3f}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
         x=summary["bin"].astype(str), y=summary["count"],
         name="count", yaxis="y2", mode="lines+markers",
         line=dict(color="rgb(60, 60, 60)", width=1, dash="dot"),
         marker=dict(size=6),
+        hovertemplate="count: %{y}<extra></extra>",
     ))
     fig.update_layout(
-        title=f"{feature}: target rate per bin (overall)",
-        xaxis_title="bin", yaxis_title="target rate",
+        title="target rate per bin (overall)",
+        xaxis_title=None, yaxis_title="target rate",
+        yaxis=dict(tickformat=".3f"),
         yaxis2=dict(title="count", overlaying="y", side="right"),
-        height=340, margin=dict(l=40, r=40, t=50, b=40),
+        height=340, margin=dict(l=40, r=40, t=40, b=30),
     )
     return fig
 
