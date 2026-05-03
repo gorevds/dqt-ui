@@ -330,8 +330,18 @@ def _page_report(sess):
 
 def _register_callbacks(app: Dash):
 
-    @app.callback(Output("sid", "data"), Input("url", "pathname"), State("sid", "data"))
-    def _ensure_sid(_path, current):
+    @app.callback(Output("sid", "data"),
+                   [Input("url", "pathname"), Input("url", "search")],
+                   State("sid", "data"))
+    def _ensure_sid(_path, search, current):
+        # ?session=<sid> in the URL wins over the cookie — that's how a shared
+        # link restores someone else's analysis (or your own from a new tab).
+        if search:
+            from urllib.parse import parse_qs
+            qs = parse_qs(search.lstrip("?"))
+            url_sid = (qs.get("session") or [None])[0]
+            if url_sid and STORE.get(url_sid) is not None:
+                return url_sid
         if current:
             sess = STORE.get(current)
             if sess is not None:
@@ -495,7 +505,8 @@ def _register_callbacks(app: Dash):
 
     # ---- Settings → Report ----------------------------------------------
     @app.callback(
-        Output("url", "pathname", allow_duplicate=True),
+        [Output("url", "pathname", allow_duplicate=True),
+         Output("url", "search", allow_duplicate=True)],
         Input("settings-next", "n_clicks"),
         [State("opt-method", "value"), State("opt-max-bins", "value"),
          State("opt-min-leaf", "value"), State("opt-granularity", "value"),
@@ -505,17 +516,19 @@ def _register_callbacks(app: Dash):
     )
     def _settings_next(n, method, max_bins, min_leaf, gran, psi_ref, outlier, tkind, sid):
         if not n:
-            return no_update
+            return no_update, no_update
         sess = STORE.get(sid)
         if sess is None:
-            return no_update
+            return no_update, no_update
         sess.settings = {
             "method": method, "max_bins": max_bins, "min_samples_leaf": min_leaf,
             "granularity": gran, "psi_reference": psi_ref, "outlier_method": outlier,
             "target_kind_override": tkind,
         }
         sess.report_cache = None
-        return "/report"
+        # Encode the session in the URL so the analysis can be re-opened or
+        # shared with anyone hitting the same server.
+        return "/report", f"?session={sid}"
 
     # ---- Report ----------------------------------------------------------
     @app.callback(
