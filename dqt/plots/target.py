@@ -96,7 +96,7 @@ def plot_target_rate_per_bin_over_time(rate_df, time_col: str) -> go.Figure:
                                  showlegend=False,
                                  hovertemplate="%{y:.3f}<extra>" + str(b) + "</extra>"))
     fig.update_layout(
-        title=_title("target rate per bin"),
+        title=_title("target rate per bin per date"),
         xaxis_title=None, yaxis_title="target rate",
         yaxis=dict(tickformat=".3f"),
         hovermode="x unified", height=340, margin=dict(l=40, r=20, t=40, b=30),
