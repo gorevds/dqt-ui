@@ -540,8 +540,27 @@ def _render_report_view(result):
         style_cell={"fontSize": "13px", "padding": "6px 10px"},
         style_header={"backgroundColor": "#f6f8fa", "fontWeight": "bold"},
         style_data_conditional=[
-            {"if": {"filter_query": "{psi_max} > 0.25"}, "backgroundColor": "#ffebe9"},
-            {"if": {"filter_query": "{psi_max} > 0.1 && {psi_max} <= 0.25"}, "backgroundColor": "#fff8c5"},
+            {"if": {"column_id": "psi_max", "filter_query": "{psi_max} > 0.25"},
+              "backgroundColor": "#ffebe9"},
+            {"if": {"column_id": "psi_max",
+                     "filter_query": "{psi_max} > 0.1 && {psi_max} <= 0.25"},
+              "backgroundColor": "#fff8c5"},
+            {"if": {"column_id": "stability_min", "filter_query": "{stability_min} < 0.6"},
+              "backgroundColor": "#ffebe9"},
+            {"if": {"column_id": "stability_min",
+                     "filter_query": "{stability_min} >= 0.6 && {stability_min} < 0.8"},
+              "backgroundColor": "#fff8c5"},
+            {"if": {"column_id": "stability_mean", "filter_query": "{stability_mean} < 0.6"},
+              "backgroundColor": "#ffebe9"},
+            {"if": {"column_id": "stability_mean",
+                     "filter_query": "{stability_mean} >= 0.6 && {stability_mean} < 0.8"},
+              "backgroundColor": "#fff8c5"},
+            {"if": {"column_id": "missing_share_max",
+                     "filter_query": "{missing_share_max} > 0.5"},
+              "backgroundColor": "#ffebe9"},
+            {"if": {"column_id": "missing_share_max",
+                     "filter_query": "{missing_share_max} > 0.2 && {missing_share_max} <= 0.5"},
+              "backgroundColor": "#fff8c5"},
         ],
     )
     blocks = []
@@ -620,11 +639,23 @@ def _summary_chips(summary):
     chips = []
     for k, v in summary.items():
         color = "#f6f8fa"
-        if k.startswith("psi") and isinstance(v, (int, float)):
-            if v > 0.25:
-                color = "#ffebe9"
-            elif v > 0.1:
-                color = "#fff8c5"
+        if isinstance(v, (int, float)) and not (v != v):  # not NaN
+            if k.startswith("psi"):
+                if v > 0.25:
+                    color = "#ffebe9"
+                elif v > 0.1:
+                    color = "#fff8c5"
+            elif k.startswith("stability"):
+                # Stability is inverse: 1 = perfect separation, 0.5 = overlap.
+                if v < 0.6:
+                    color = "#ffebe9"
+                elif v < 0.8:
+                    color = "#fff8c5"
+            elif k == "missing_share_max":
+                if v > 0.5:
+                    color = "#ffebe9"
+                elif v > 0.2:
+                    color = "#fff8c5"
         if isinstance(v, (int, float)):
             text = f"{k}: {round(v, 3)}"
         else:
