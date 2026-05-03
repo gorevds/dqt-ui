@@ -6,7 +6,7 @@ def test_app_factory_creates_app():
     from dqt.app.main import create_app
     app = create_app()
     assert app is not None
-    assert app.title == "DQT — Data Quality Tool"
+    assert app.title == "Data Quality Tool"
     # Layout should be a function or a Component
     layout = app.layout() if callable(app.layout) else app.layout
     assert layout is not None
