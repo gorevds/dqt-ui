@@ -599,17 +599,33 @@ def _render_report_view(result):
             ], style={"marginBottom": "8px", "background": "#f6f8fa",
                        "padding": "6px 10px", "borderRadius": "4px"})
 
+        sev = blk.get("severity", "green")
+        sev_style = _SEVERITY_STYLES[sev]
         card_children = [
-            html.H3(f"{blk['feature']}  ", style={"display": "inline"}),
-            html.Span(f"({blk['kind']})", style={"color": "#656d76", "fontSize": "13px"}),
+            html.Div([
+                html.Span(sev_style["badge"], style={
+                    "padding": "2px 8px", "borderRadius": "10px",
+                    "fontSize": "11px", "fontWeight": 600,
+                    "background": sev_style["badge_bg"], "color": sev_style["badge_fg"],
+                    "marginRight": "10px", "verticalAlign": "middle",
+                }),
+                html.Span(blk["feature"], style={"fontSize": "18px", "fontWeight": 600,
+                                                   "verticalAlign": "middle"}),
+                html.Span(f"  ({blk['kind']})",
+                           style={"color": "#656d76", "fontSize": "13px",
+                                  "verticalAlign": "middle"}),
+            ]),
             html.Div(_summary_chips(blk["summary"]), style={"marginBottom": "8px",
-                                                              "marginTop": "4px"}),
+                                                              "marginTop": "8px"}),
         ]
         if bins_block is not None:
             card_children.append(bins_block)
         card_children.extend(rows)
         blocks.append(html.Div(card_children, style={
-            "background": "#fff", "border": "1px solid #d0d7de", "borderRadius": "6px",
+            "background": "#fff",
+            "border": f"1px solid {sev_style['border']}",
+            "borderLeft": f"4px solid {sev_style['border']}",
+            "borderRadius": "6px",
             "padding": "16px", "marginBottom": "16px",
         }))
     return html.Div([
@@ -623,6 +639,16 @@ def _render_report_view(result):
         html.H3("Per-feature details", style={"marginTop": "8px"}),
         *blocks,
     ])
+
+
+_SEVERITY_STYLES = {
+    "green":  {"badge": "● STABLE", "badge_bg": "#dafbe1", "badge_fg": "#1a7f37",
+                "border": "#d0d7de"},
+    "yellow": {"badge": "● WATCH",  "badge_bg": "#fff8c5", "badge_fg": "#9a6700",
+                "border": "#d4a72c"},
+    "red":    {"badge": "● DRIFT",  "badge_bg": "#ffebe9", "badge_fg": "#cf222e",
+                "border": "#cf222e"},
+}
 
 
 def _outlier_block(fig):

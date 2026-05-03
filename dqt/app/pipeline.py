@@ -136,6 +136,7 @@ def run_analysis(
             "summary": summ,
             "figs": figs,
             "bin_descriptions": binner_result.bin_descriptions,
+            "severity": _severity_for(summ, miss),
         })
 
     return {
@@ -155,3 +156,29 @@ def _infer_kind(s: pd.Series) -> str:
     if pd.api.types.is_numeric_dtype(s) and not pd.api.types.is_bool_dtype(s):
         return "numeric"
     return "categorical"
+
+
+def _severity_for(summary: dict, miss: pd.DataFrame) -> str:
+    """One of 'red' | 'yellow' | 'green' — the worst-of-metric verdict for the card."""
+    psi_max = summary.get("psi_max")
+    stability_min = summary.get("stability_min")
+    miss_max = float(miss["missing_share"].max()) if not miss.empty else 0.0
+
+    def _is_num(v):
+        return isinstance(v, (int, float)) and not (v != v)
+
+    red = (
+        (_is_num(psi_max) and psi_max > 0.25)
+        or (_is_num(stability_min) and stability_min < 0.6)
+        or miss_max > 0.5
+    )
+    yellow = (
+        (_is_num(psi_max) and psi_max > 0.1)
+        or (_is_num(stability_min) and stability_min < 0.8)
+        or miss_max > 0.2
+    )
+    if red:
+        return "red"
+    if yellow:
+        return "yellow"
+    return "green"
