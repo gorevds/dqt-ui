@@ -133,7 +133,7 @@ def plot_bins_summary(rate_df) -> go.Figure:
         x=summary["bin"].astype(str), y=summary["count"],
         marker_color=[colors[b] for b in bins],
         showlegend=False,
-        hovertemplate="count: %{y}<extra></extra>",
+        hovertemplate="count: %{y:,}<extra></extra>",
     ))
     fig.add_trace(go.Scatter(
         x=summary["bin"].astype(str), y=summary["rate"],
@@ -146,6 +146,9 @@ def plot_bins_summary(rate_df) -> go.Figure:
     fig.update_layout(
         title=_title("target rate per bin"),
         xaxis_title=None, yaxis_title="count",
+        # SI suffixes ('1.2k', '3.4M') — readable at any scale, no noisy
+        # 1.234e+05 ticks even when bin counts hit millions.
+        yaxis=dict(tickformat="~s"),
         yaxis2=dict(title=None, overlaying="y", side="right", tickformat=".3f"),
         height=340, margin=dict(l=40, r=40, t=40, b=30),
     )
