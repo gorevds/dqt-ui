@@ -135,8 +135,7 @@ def plot_bins_summary(rate_df) -> go.Figure:
     fig.update_layout(
         title=_title("target rate per bin"),
         xaxis_title=None, yaxis_title="count",
-        yaxis2=dict(title="target rate", overlaying="y", side="right",
-                     tickformat=".3f"),
+        yaxis2=dict(title=None, overlaying="y", side="right", tickformat=".3f"),
         height=340, margin=dict(l=40, r=40, t=40, b=30),
     )
     return fig
