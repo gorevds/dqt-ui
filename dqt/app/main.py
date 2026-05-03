@@ -541,7 +541,7 @@ def _render_status(result):
 def _render_report_view(result):
     summary_df = result["summary_table"]
     summary_table = dash_table.DataTable(
-        data=summary_df.round(4).to_dict("records"),
+        data=summary_df.round(3).to_dict("records"),
         columns=[{"name": c, "id": c} for c in summary_df.columns],
         page_size=10, sort_action="native", filter_action="native",
         style_table={"overflowX": "auto", "border": "1px solid #d0d7de", "borderRadius": "4px"},
@@ -632,7 +632,10 @@ def _summary_chips(summary):
                 color = "#ffebe9"
             elif v > 0.1:
                 color = "#fff8c5"
-        text = f"{k}: {v:.4g}" if isinstance(v, (int, float)) else f"{k}: {v}"
+        if isinstance(v, (int, float)):
+            text = f"{k}: {round(v, 3)}"
+        else:
+            text = f"{k}: {v}"
         chips.append(html.Span(text, style={
             "background": color, "padding": "3px 8px", "borderRadius": "4px",
             "marginRight": "8px", "fontSize": "12px",

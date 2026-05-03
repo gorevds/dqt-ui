@@ -57,7 +57,8 @@ def build_html_report(
             fig_html.append(pio.to_html(fig, include_plotlyjs=False, full_html=False,
                                         config={"displayModeBar": False}))
         summary_html = "".join(
-            f"<div><b>{k}:</b> {v:.4g}</div>" if isinstance(v, (int, float)) else f"<div><b>{k}:</b> {v}</div>"
+            f"<div><b>{k}:</b> {round(v, 3)}</div>" if isinstance(v, (int, float))
+            else f"<div><b>{k}:</b> {v}</div>"
             for k, v in (blk.get("summary") or {}).items()
         )
         pieces.append(
