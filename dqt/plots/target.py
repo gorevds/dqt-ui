@@ -55,16 +55,27 @@ def plot_bin_shares_over_time(rate_df, time_col: str, psi_df=None) -> go.Figure:
         showlegend=False,
     )
     if psi_df is not None and not psi_df.empty:
+        psi_x = psi_df[time_col].astype(str)
+        psi_y = psi_df["psi"]
         fig.add_trace(go.Scatter(
-            x=psi_df[time_col].astype(str), y=psi_df["psi"],
-            yaxis="y2", mode="lines+markers", name="PSI",
-            line=dict(color="rgb(60, 60, 60)", width=1.5, dash="dot"),
-            marker=dict(size=6, color="rgb(60, 60, 60)"),
+            x=psi_x, y=psi_y,
+            yaxis="y2", mode="lines", name="PSI",
+            line=dict(color="rgb(140, 140, 140)", width=1.5, dash="dot"),
             showlegend=False,
             hovertemplate="PSI: %{y:.3f}<extra></extra>",
         ))
+        # Red dots only at the alarming PSI values; the line stays gray.
+        red_mask = psi_y > 0.25
+        if red_mask.any():
+            fig.add_trace(go.Scatter(
+                x=psi_x[red_mask], y=psi_y[red_mask],
+                yaxis="y2", mode="markers", name="PSI alarm",
+                marker=dict(size=8, color="rgb(214, 39, 40)"),
+                showlegend=False,
+                hovertemplate="PSI: %{y:.3f}<extra></extra>",
+            ))
         layout["title"] = _title("bin share + PSI")
-        layout["yaxis2"] = dict(title="PSI", overlaying="y", side="right",
+        layout["yaxis2"] = dict(title=None, overlaying="y", side="right",
                                   tickformat=".3f", showgrid=False)
     fig.update_layout(**layout)
     return fig
