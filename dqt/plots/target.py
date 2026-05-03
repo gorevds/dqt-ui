@@ -49,7 +49,7 @@ def plot_bin_shares_over_time(rate_df, time_col: str, psi_df=None) -> go.Figure:
     title = "bin share"
     layout = dict(
         title=_title(title),
-        xaxis_title=None, yaxis_title="share",
+        xaxis_title=None, yaxis_title=None,
         yaxis=dict(tickformat=".0%", range=[0, 1]),
         hovermode="x unified", height=340, margin=dict(l=40, r=40, t=40, b=30),
         showlegend=False,
