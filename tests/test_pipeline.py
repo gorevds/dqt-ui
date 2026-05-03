@@ -17,7 +17,7 @@ def test_pipeline_binary_end_to_end(binary_df):
     assert result["meta"]["n_rows"] > 0
     assert len(result["features"]) == 2
     summary = result["summary_table"]
-    assert {"feature", "rate_std", "psi_mean"}.issubset(summary.columns) | {"feature", "rate_std"}.issubset(summary.columns)
+    assert {"feature", "rate_range", "psi_mean"}.issubset(summary.columns)
 
 
 def test_pipeline_regression(regression_df):
