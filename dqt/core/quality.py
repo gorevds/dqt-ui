@@ -50,8 +50,14 @@ def psi_over_time(
     reference: str = "first",
     bins: int = 10,
     is_numeric: Optional[bool] = None,
+    reference_values=None,
 ) -> pd.DataFrame:
-    """PSI per time bucket vs `reference` ('first' | 'previous' | <bucket-label>)."""
+    """PSI per time bucket vs ``reference`` ('first' | 'previous' | <bucket-label>).
+
+    ``reference_values``: optional pre-collected reference samples (Series or
+    array) — if given, every bucket is compared against this baseline instead
+    of any in-data bucket. Useful when you have a separate 'golden' dataset.
+    """
     if is_numeric is None:
         is_numeric = pd.api.types.is_numeric_dtype(df[feature]) and not pd.api.types.is_bool_dtype(df[feature])
     df = df[[feature, time_col]].dropna()
@@ -64,10 +70,13 @@ def psi_over_time(
         ref_label = None  # rolling
     else:
         ref_label = reference
+    use_external = reference_values is not None
     rows = []
     for i, b in enumerate(buckets):
         actual = df.loc[df[time_col] == b, feature]
-        if reference == "previous":
+        if use_external:
+            expected = pd.Series(reference_values).dropna()
+        elif reference == "previous":
             if i == 0:
                 rows.append({time_col: str(b), "psi": 0.0})
                 continue

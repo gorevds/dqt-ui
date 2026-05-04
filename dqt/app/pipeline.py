@@ -40,8 +40,14 @@ def run_analysis(
     outlier_method: str = "iqr",
     target_kind_override: Optional[str] = None,
     config=None,
+    reference_df: Optional[pd.DataFrame] = None,
 ) -> dict:
-    """Run the full DQ analysis. Returns {meta, features[], summary_table}."""
+    """Run the full DQ analysis. Returns {meta, features[], summary_table}.
+
+    ``reference_df``: optional baseline DataFrame. When given, PSI for every
+    feature is computed against that baseline instead of against the first /
+    previous bucket of the input.
+    """
     from dqt.config import DEFAULT
     if config is None:
         config = DEFAULT
@@ -99,8 +105,11 @@ def run_analysis(
             time_col="__time__", target_kind=binner_target_kind,
         )
 
+        ref_vals = (reference_df[feat]
+                    if reference_df is not None and feat in reference_df.columns
+                    else None)
         psi_t = psi_over_time(work, feat, "__time__", reference=psi_reference,
-                                is_numeric=is_numeric)
+                                is_numeric=is_numeric, reference_values=ref_vals)
         if is_numeric:
             outl = outlier_share_over_time(work, feat, "__time__", method=outlier_method)
             # When the global thresholds catch nothing, skip the chart entirely

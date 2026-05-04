@@ -139,6 +139,7 @@ def analyze(
     psi_reference: str = "first",
     outlier_method: str = "z",
     config=None,
+    reference_df: Optional[pd.DataFrame] = None,
 ) -> Report:
     """Run a DQ analysis on a tabular DataFrame.
 
@@ -206,6 +207,7 @@ def analyze(
         psi_reference=psi_reference,
         outlier_method=outlier_method,
         config=config,
+        reference_df=reference_df,
     )
     return Report(
         meta=raw["meta"],

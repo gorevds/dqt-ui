@@ -88,6 +88,12 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--sql-uri", help="SQLAlchemy URL (postgres://, snowflake://, ...) — ignored if `input` given")
     a.add_argument("--sql-source", default=None,
                     help="Table name or SELECT query when reading from SQL")
+    a.add_argument(
+        "--reference", type=Path, metavar="FILE",
+        help="Optional baseline CSV/Parquet. PSI is computed against this "
+             "dataset instead of the first/previous time bucket — i.e. compare "
+             "every period to a 'golden' reference snapshot.",
+    )
     a.add_argument("--time", help="Time column name (auto-detected if omitted)")
     a.add_argument("--target", help="Target column name (auto-detected if omitted)")
     a.add_argument("--features", nargs="*", help="Feature columns (default: all but time/target)")
@@ -154,6 +160,11 @@ def main(argv: list[str] | None = None) -> int:
         if df.empty:
             raise SystemExit("After --from/--to/--filter no rows remain")
 
+        reference_df = _read_file(args.reference) if args.reference else None
+        if reference_df is not None:
+            print(f"  reference: {args.reference} ({len(reference_df):,} rows)",
+                  file=sys.stderr)
+
         report = analyze(
             df,
             time_col=args.time,
@@ -165,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
             min_samples_leaf=args.min_samples_leaf,
             psi_reference=args.psi_reference,
             outlier_method=args.outlier_method,
+            reference_df=reference_df,
         )
         m = report.meta
         print(f"  time={m['time_col']}  target={m['target_col']}  "
