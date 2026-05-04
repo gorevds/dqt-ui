@@ -39,8 +39,12 @@ def run_analysis(
     psi_reference: str = "first",
     outlier_method: str = "iqr",
     target_kind_override: Optional[str] = None,
+    config=None,
 ) -> dict:
     """Run the full DQ analysis. Returns {meta, features[], summary_table}."""
+    from dqt.config import DEFAULT
+    if config is None:
+        config = DEFAULT
     work = df.copy()
 
     info = detect_target_kind(work[target_col])
@@ -137,7 +141,7 @@ def run_analysis(
             "summary": summ,
             "figs": figs,
             "bin_descriptions": binner_result.bin_descriptions,
-            "severity": _severity_for(summ, miss),
+            "severity": _severity_for(summ, miss, thresholds=config.for_feature(feat)),
             "verdict": _verdict_for(summ, miss_max, fig_outl is not None),
         })
 
@@ -188,27 +192,10 @@ def _verdict_for(summary: dict, miss_max: float, has_outliers: bool) -> str:
     return ". ".join(p[0].upper() + p[1:] for p in parts) + ("." if parts else "")
 
 
-def _severity_for(summary: dict, miss: pd.DataFrame) -> str:
-    """One of 'red' | 'yellow' | 'green' — the worst-of-metric verdict for the card."""
+def _severity_for(summary: dict, miss: pd.DataFrame, thresholds=None) -> str:
+    """Worst-of-metric verdict ('red' | 'yellow' | 'green'), via dqt.config thresholds."""
+    from dqt.config import severity_for
     psi_max = summary.get("psi_max")
     stability_min = summary.get("stability_min")
     miss_max = float(miss["missing_share"].max()) if not miss.empty else 0.0
-
-    def _is_num(v):
-        return isinstance(v, (int, float)) and not (v != v)
-
-    red = (
-        (_is_num(psi_max) and psi_max > 0.25)
-        or (_is_num(stability_min) and stability_min < 0.6)
-        or miss_max > 0.5
-    )
-    yellow = (
-        (_is_num(psi_max) and psi_max > 0.1)
-        or (_is_num(stability_min) and stability_min < 0.8)
-        or miss_max > 0.2
-    )
-    if red:
-        return "red"
-    if yellow:
-        return "yellow"
-    return "green"
+    return severity_for(psi_max, stability_min, miss_max, thresholds=thresholds)

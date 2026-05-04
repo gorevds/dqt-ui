@@ -138,6 +138,7 @@ def analyze(
     min_samples_leaf: float = 0.05,
     psi_reference: str = "first",
     outlier_method: str = "z",
+    config=None,
 ) -> Report:
     """Run a DQ analysis on a tabular DataFrame.
 
@@ -204,6 +205,7 @@ def analyze(
         min_samples_leaf=min_samples_leaf,
         psi_reference=psi_reference,
         outlier_method=outlier_method,
+        config=config,
     )
     return Report(
         meta=raw["meta"],
