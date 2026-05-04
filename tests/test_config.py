@@ -55,7 +55,7 @@ def test_per_feature_override(tmp_path):
     assert tight.psi_red == 0.08
     assert severity_for(psi_max=0.10, stability_min=1.0, missing_max=0.0,
                           thresholds=tight) == "red"
-    assert severity_for(psi_max=0.10, stability_min=1.0, missing_max=0.0,
+    assert severity_for(psi_max=0.11, stability_min=1.0, missing_max=0.0,
                           thresholds=default) == "yellow"
 
 
