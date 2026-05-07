@@ -155,36 +155,57 @@ def feature_distribution_over_time(
 def pairwise_bin_stability(
     bins_rate: pd.DataFrame,
     time_col: str,
+    target_kind: TargetKind = TargetKind.BINARY,
 ) -> pd.DataFrame:
     """Per-period mean of Φ(z) over all bin pairs — 0..1, higher = more separated.
 
-    For binary targets only. Input is the output of bins_target_rate_over_time:
-    a long table with columns [time_col, bin, rate, count]. For each time bucket
-    we take all unique bin pairs, compute the two-proportion z-statistic, push
-    it through the standard-normal CDF (so the result is bounded 0..1) and
-    average across pairs. Stable features keep this score close to 1 across
-    every period; if bins start to overlap or invert, the score drops.
+    Input is the output of ``bins_target_rate_over_time``: a long table with
+    columns ``[time_col, bin, rate, count, se]``. For each time bucket we take
+    all unique bin pairs, compute a z-statistic, push it through the standard-
+    normal CDF (so the result is bounded 0..1) and average across pairs. Stable
+    features keep this score close to 1 across every period; if bins start to
+    overlap or invert, the score drops.
+
+    The z-statistic depends on ``target_kind``:
+
+    * ``BINARY`` — two-proportion pooled z-test on the bin's success rate.
+    * ``REGRESSION`` — two-mean z-test using the per-bin standard error of
+      the mean, ``z = |m1 - m2| / sqrt(se1**2 + se2**2)``. Multiclass targets
+      are nominal: don't read distance between classes as meaningful — prefer
+      ``--positive-class`` (CLI) / one-vs-rest binarisation upstream.
     """
     if bins_rate.empty:
         return pd.DataFrame(columns=[time_col, "stability"])
+    has_se = "se" in bins_rate.columns
     rows = []
     for bucket, sub in bins_rate.groupby(time_col, observed=True):
         bins = sub["bin"].tolist()
-        rates = sub.set_index("bin")["rate"]
-        counts = sub.set_index("bin")["count"]
         if len(bins) < 2:
             continue
+        # ``rate`` is a proportion in the binary branch and a mean in the
+        # regression branch — treat them generically as ``v`` (value) below.
+        lookup = sub.set_index("bin")
+        values = lookup["rate"]
+        counts = lookup["count"]
+        ses = lookup["se"] if has_se else None
         confs = []
         for b1, b2 in combinations(bins, 2):
             n1, n2 = float(counts[b1]), float(counts[b2])
             if n1 < 1 or n2 < 1:
                 continue
-            p1, p2 = float(rates[b1]), float(rates[b2])
-            p_pool = (p1 * n1 + p2 * n2) / (n1 + n2)
-            denom = np.sqrt(p_pool * (1 - p_pool) * (1 / n1 + 1 / n2))
-            if denom == 0:
+            v1, v2 = float(values[b1]), float(values[b2])
+            if target_kind == TargetKind.BINARY:
+                p_pool = (v1 * n1 + v2 * n2) / (n1 + n2)
+                denom = np.sqrt(p_pool * (1 - p_pool) * (1 / n1 + 1 / n2))
+            else:
+                # Regression / multiclass-as-regression: two-mean z using SE.
+                if ses is None:
+                    continue
+                se1, se2 = float(ses[b1]), float(ses[b2])
+                denom = np.sqrt(se1 * se1 + se2 * se2)
+            if not np.isfinite(denom) or denom == 0:
                 continue
-            z = abs(p1 - p2) / denom
+            z = abs(v1 - v2) / denom
             confs.append(stats.norm.cdf(z))
         if confs:
             rows.append({time_col: str(bucket), "stability": float(np.mean(confs))})

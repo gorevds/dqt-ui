@@ -162,3 +162,59 @@ def test_stability_summary_includes_pairwise():
     assert "stability_mean" in summary
     assert "stability_min" in summary
     assert summary["stability_mean"] > 0.99
+
+
+def test_pairwise_stability_regression_well_separated():
+    # Continuous target — bin means far apart relative to SE → stability near 1.
+    rate_df = pd.DataFrame({
+        "m": ["1", "1", "1", "2", "2", "2"],
+        "bin": ["lo", "mid", "hi", "lo", "mid", "hi"],
+        "rate": [10.0, 50.0, 100.0, 11.0, 49.0, 101.0],
+        "count": [500, 500, 500, 500, 500, 500],
+        "se":   [0.20, 0.20, 0.20, 0.20, 0.20, 0.20],
+    })
+    out = pairwise_bin_stability(rate_df, "m", target_kind=TargetKind.REGRESSION)
+    assert len(out) == 2
+    assert (out["stability"] > 0.99).all()
+
+
+def test_pairwise_stability_regression_overlapping():
+    # Means within one SE of each other → stability close to 0.5.
+    rate_df = pd.DataFrame({
+        "m": ["1", "1"],
+        "bin": ["a", "b"],
+        "rate": [10.0, 10.05],
+        "count": [200, 200],
+        "se":   [1.0, 1.0],
+    })
+    out = pairwise_bin_stability(rate_df, "m", target_kind=TargetKind.REGRESSION)
+    assert 0.45 <= out["stability"].iloc[0] <= 0.65
+
+
+def test_pairwise_stability_regression_requires_se():
+    # If SE column is absent we can't compute the regression-flavoured z.
+    # Function should silently emit no rows rather than raise.
+    rate_df = pd.DataFrame({
+        "m": ["1", "1"],
+        "bin": ["a", "b"],
+        "rate": [10.0, 50.0],
+        "count": [100, 100],
+        # no 'se'
+    })
+    out = pairwise_bin_stability(rate_df, "m", target_kind=TargetKind.REGRESSION)
+    assert out.empty
+
+
+def test_pairwise_stability_regression_zero_se_skipped():
+    # Zero SE means a degenerate denominator; pair is skipped, but a non-zero
+    # pair in the same bucket still produces a valid stability value.
+    rate_df = pd.DataFrame({
+        "m": ["1", "1", "1"],
+        "bin": ["a", "b", "c"],
+        "rate": [10.0, 20.0, 30.0],
+        "count": [100, 100, 100],
+        "se":   [0.0, 0.0, 0.5],
+    })
+    out = pairwise_bin_stability(rate_df, "m", target_kind=TargetKind.REGRESSION)
+    assert not out.empty
+    assert 0.0 <= out["stability"].iloc[0] <= 1.0

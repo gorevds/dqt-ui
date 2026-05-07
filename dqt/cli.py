@@ -13,24 +13,15 @@ from dqt.notify import post as notify_post
 
 
 def _read_file(path: Path, engine: str = "auto") -> pd.DataFrame:
-    name = path.name.lower()
-    if name.endswith((".csv", ".tsv", ".txt")):
-        sep = "\t" if name.endswith(".tsv") else None
-        if sep is None:
-            return pd.read_csv(path, sep=None, engine="python")
-        return pd.read_csv(path, sep=sep)
-    if name.endswith((".parquet", ".pq")):
-        if engine == "duckdb":
-            try:
-                import duckdb  # type: ignore
-            except ImportError as exc:
-                raise SystemExit(
-                    "--engine duckdb requires duckdb (`pip install duckdb`)"
-                ) from exc
-            # Glob-friendly: handles both single files and directories of parquet.
-            return duckdb.query(f"SELECT * FROM '{path}'").to_df()
-        return pd.read_parquet(path)
-    raise SystemExit(f"Unsupported file extension: {path}")
+    """Thin CLI wrapper around :func:`dqt.io.read_file` that translates
+    library-level errors into argparse-friendly ``SystemExit``.
+    """
+    from dqt.io import read_file
+
+    try:
+        return read_file(path, engine=engine)
+    except (ImportError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _apply_filters(df: pd.DataFrame, args) -> pd.DataFrame:
@@ -60,18 +51,13 @@ def _apply_filters(df: pd.DataFrame, args) -> pd.DataFrame:
 
 
 def _read_sql(uri: str, table_or_query: str) -> pd.DataFrame:
+    """Thin CLI wrapper around :func:`dqt.io.read_sql`."""
+    from dqt.io import read_sql
+
     try:
-        import sqlalchemy  # type: ignore
+        return read_sql(uri, table_or_query)
     except ImportError as exc:
-        raise SystemExit(
-            "SQL input requires SQLAlchemy (`pip install sqlalchemy` plus the "
-            "driver for your database, e.g. psycopg2-binary / pymysql / snowflake-sqlalchemy)"
-        ) from exc
-    engine = sqlalchemy.create_engine(uri)
-    # If the argument looks like a SELECT, run it as-is; otherwise treat as a table name.
-    if table_or_query.strip().lower().startswith("select"):
-        return pd.read_sql(table_or_query, engine)
-    return pd.read_sql_table(table_or_query, engine)
+        raise SystemExit(str(exc)) from exc
 
 
 
@@ -88,6 +74,16 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--sql-uri", help="SQLAlchemy URL (postgres://, snowflake://, ...) — ignored if `input` given")
     a.add_argument("--sql-source", default=None,
                     help="Table name or SELECT query when reading from SQL")
+    a.add_argument(
+        "--from-dbt", metavar="MANIFEST",
+        help="Path to dbt target/manifest.json. Combined with --dbt-model, "
+             "DQT resolves the model to its warehouse relation and runs "
+             "the analysis against it via --sql-uri.",
+    )
+    a.add_argument(
+        "--dbt-model", metavar="NAME",
+        help="dbt model name to monitor; resolved against --from-dbt manifest.",
+    )
     a.add_argument(
         "--reference", type=Path, metavar="FILE",
         help="Optional baseline CSV/Parquet. PSI is computed against this "
@@ -193,6 +189,20 @@ def main(argv: list[str] | None = None) -> int:
             return 0 if ok else 1
 
     if args.cmd == "analyze":
+        # dbt resolution: turn --from-dbt + --dbt-model into a --sql-source.
+        if args.from_dbt or args.dbt_model:
+            from dqt.integrations.dbt import cli_resolve
+
+            resolved = cli_resolve(args.from_dbt, args.dbt_model)
+            if resolved is None:
+                raise SystemExit("--from-dbt and --dbt-model must be given together")
+            if not args.sql_uri:
+                raise SystemExit("--from-dbt requires --sql-uri (SQLAlchemy URL to your warehouse)")
+            if args.sql_source:
+                raise SystemExit("--from-dbt is mutually exclusive with --sql-source; "
+                                 "DQT generates the SELECT itself")
+            args.sql_source = resolved
+
         if args.input is not None:
             df = _read_file(args.input, engine=args.engine)
             source_label = str(args.input)
@@ -200,7 +210,8 @@ def main(argv: list[str] | None = None) -> int:
             if not args.sql_source:
                 raise SystemExit("--sql-uri requires --sql-source (table name or SELECT query)")
             df = _read_sql(args.sql_uri, args.sql_source)
-            source_label = f"sql:{args.sql_source}"
+            source_label = (f"dbt:{args.dbt_model}" if args.dbt_model
+                            else f"sql:{args.sql_source}")
         else:
             raise SystemExit("Pass an input file path or --sql-uri")
         print(f"→ {source_label}: {len(df):,} rows × {len(df.columns)} cols",

@@ -49,3 +49,31 @@ def test_column_summary(binary_df):
     assert {row["column"] for row in summary} == set(binary_df.columns)
     for row in summary:
         assert "dtype" in row and "nan_share" in row and "n_unique" in row
+
+
+def test_parse_upload_rejects_oversized_payload(monkeypatch):
+    from dqt.app.io import UploadTooLargeError
+
+    monkeypatch.setenv("DQT_MAX_UPLOAD_MB", "1")
+    big = b"x" * (2 * 1024 * 1024)  # 2 MB > 1 MB cap
+    payload = "data:text/csv;base64," + base64.b64encode(big).decode()
+    try:
+        parse_upload(payload, "data.csv")
+    except UploadTooLargeError as exc:
+        assert "DQT_MAX_UPLOAD_MB" in str(exc)
+    else:
+        raise AssertionError("expected UploadTooLargeError")
+
+
+def test_parse_upload_clamps_negative_env(monkeypatch):
+    """Out-of-range or non-numeric DQT_MAX_UPLOAD_MB falls back to a sane cap."""
+    from dqt.app.io import max_bytes
+
+    monkeypatch.setenv("DQT_MAX_UPLOAD_MB", "0")
+    assert max_bytes() == 1 * 1024 * 1024  # clamps to 1 MB minimum
+
+    monkeypatch.setenv("DQT_MAX_UPLOAD_MB", "999999")
+    assert max_bytes() == 4096 * 1024 * 1024  # clamps to 4 GB ceiling
+
+    monkeypatch.setenv("DQT_MAX_UPLOAD_MB", "not_a_number")
+    assert max_bytes() == 250 * 1024 * 1024  # default

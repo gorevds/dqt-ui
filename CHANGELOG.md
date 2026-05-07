@@ -5,6 +5,65 @@ follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- **Pairwise z-stability for regression targets** — the metric is now
+  defined for both binary (two-proportion z) and continuous targets
+  (two-mean z using per-bin SE). Multiclass without `--positive-class`
+  is suppressed because integer-coded class order isn't a meaningful
+  axis for the metric.
+- **Durable session store** (`DQT_SESSION_DIR`) — opt-in disk
+  persistence so `?session=<sid>` links survive a service restart.
+  Background sweeper thread evicts expired sessions; LRU cap on top.
+  Replaces the v1.0 stale "sweep is never called" leak.
+- **Custom metrics plugin API** (`dqt.plugins`): third-party packages
+  can register IV / Gini / monotonicity / etc. via the
+  `dqt.metrics` entry point group. New keys appear in the per-feature
+  summary and the summary table out of the box. Programmatic
+  `register_metric()` for tests / one-offs.
+- **REST API v1** (`/api/v1/...`) mounted on the Dash server. Endpoints:
+  `POST /runs`, `GET /runs`, `GET /runs/<id>`, `GET /runs/<id>/feature/<name>`,
+  `GET /healthz`. OpenAPI schema in `docs/openapi.yaml`.
+- **Integrations**:
+  - GitHub Action (`actions/dqt/action.yml`) — composite action
+    wrapping `dqt analyze`, surfaces severity outputs, uploads HTML
+    artefact.
+  - Airflow operator (`dqt.integrations.airflow.DQTAnalyzeOperator`).
+  - MLflow logging hook (`dqt.integrations.mlflow.log_report`).
+  - dbt manifest reader (`dqt analyze --from-dbt manifest.json
+    --dbt-model my_model`).
+- **Configurable demo size** via `DQT_DEMO_ROWS` (clamped 100..1 000 000).
+- **Configurable upload cap** via `DQT_MAX_UPLOAD_MB` (clamped 1..4096 MB).
+  Friendly error message that points at the env var.
+- **Stability vs PSI/KS/Wasserstein/JSD benchmark** — reproducible
+  script + write-up at `docs/benchmark_metrics.md`.
+- **Russian quickstart**: `README.ru.md` with language switcher in
+  `README.md`. 152-ФЗ deployment notes.
+- **Docs**: `ARCHITECTURE.md` (layered design, data flow, extension
+  points) and `CONTRIBUTING.md` (PR expectations, areas to contribute,
+  areas declined).
+- **Sample notebooks** at `examples/credit_lendingclub.py` and
+  `examples/fraud_ieee.py` (jupytext-convertible).
+
+### Fixed
+- `core/autodetect.py:36` no longer swallows `Exception` silently when a
+  datetime parse fails; the failure is logged at DEBUG and the column
+  is excluded from time-column candidates. UserWarning on
+  format-inference is suppressed only for that span.
+- `STORE.sweep()` was defined but never called in v1.0 — sessions leaked
+  for the lifetime of a single gunicorn worker. The new sweeper thread
+  fires on a 5-min tick (`Event.wait` for prompt shutdown).
+- `pairwise_bin_stability` no longer raises when the `se` column is
+  missing on the regression branch — returns an empty frame instead.
+- README positioning leads with scorecard monitoring and the
+  Apache/MIT vs AGPL distinction (was generic drift framing).
+
+### Changed
+- `pairwise_bin_stability(rate, time_col)` gained a third positional-
+  default keyword `target_kind=TargetKind.BINARY`. Backwards compatible
+  with v1.0 callers.
+- `dqt.app.store.STORE` is now a lazy proxy — importing the module no
+  longer spawns a background thread.
+
 ## [1.0.0] — 2026-05-04
 
 First production release. Three surfaces (UI / CLI / library), all sharing

@@ -24,6 +24,7 @@ from dqt.plots import (
     plot_outlier_share_over_time,
     plot_target_rate_per_bin_over_time,
 )
+from dqt.plugins import FeatureContext, apply_plugins, discover_metrics
 
 
 def run_analysis(
@@ -95,6 +96,7 @@ def run_analysis(
     binned["__time__"] = work["__time__"].values
     binned[target_col] = work[target_col].values
 
+    plugin_metrics = discover_metrics()
     feature_blocks = []
     summary_rows = []
     for feat in features:
@@ -122,10 +124,15 @@ def run_analysis(
         else:
             fig_outl = None
 
-        # Pairwise z-score stability is meaningful only for binary targets
-        # (the formula assumes two-proportion comparison).
-        pairwise = (pairwise_bin_stability(rate, "__time__")
-                    if binner_target_kind == TargetKind.BINARY else None)
+        # Stability uses two-proportion z-test for binary targets and a
+        # two-mean z-test (mean diff / pooled SE) for regression. Multiclass
+        # without --positive-class is integer-coded into ordinal codes; the
+        # resulting stability number depends on the (arbitrary) code order
+        # and is misleading. Compute pairwise for binary/regression only.
+        if info_kind == TargetKind.MULTICLASS:
+            pairwise = None
+        else:
+            pairwise = pairwise_bin_stability(rate, "__time__", target_kind=binner_target_kind)
 
         fig_bin_shares = plot_bin_shares_over_time(rate, "__time__", psi_df=psi_t)
         fig_rate = plot_target_rate_per_bin_over_time(rate, "__time__", stability_df=pairwise)
@@ -133,6 +140,15 @@ def run_analysis(
 
         miss = missingness_over_time(work, feat, "__time__")
         summ = stability_summary(rate, psi_t, pairwise)
+        # Plugin metrics get a stable view of the feature so they can compute
+        # IV / Gini / monotonicity / etc. and contribute keys to ``summ``.
+        if plugin_metrics:
+            ctx = FeatureContext(
+                df=work, feature=feat, time_col="__time__",
+                target_col=target_col, target_kind=binner_target_kind,
+                is_numeric=is_numeric, bins_rate=rate, psi_table=psi_t,
+            )
+            apply_plugins(plugin_metrics, ctx, summ)
         summary_rows.append({"feature": feat, "type": kind, **summ,
                              "missing_share_max": float(miss["missing_share"].max()) if not miss.empty else 0.0})
 

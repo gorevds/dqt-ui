@@ -3,10 +3,34 @@ from __future__ import annotations
 
 import base64
 import io
+import os
 
 import pandas as pd
 
-MAX_BYTES = 250 * 1024 * 1024  # 250 MB
+_DEFAULT_MAX_MB = 250
+
+
+def max_bytes() -> int:
+    """Upload size cap, honouring ``DQT_MAX_UPLOAD_MB``. Bounds: 1 MB .. 4 GB."""
+    raw = os.environ.get("DQT_MAX_UPLOAD_MB")
+    mb = _DEFAULT_MAX_MB
+    if raw:
+        try:
+            mb = int(raw)
+        except ValueError:
+            mb = _DEFAULT_MAX_MB
+    mb = max(1, min(mb, 4096))
+    return mb * 1024 * 1024
+
+
+# Back-compat: callers and tests sometimes import MAX_BYTES directly. The
+# module-level value reflects the env at import time; callers that need a
+# live value should call ``max_bytes()``.
+MAX_BYTES = max_bytes()
+
+
+class UploadTooLargeError(ValueError):
+    """Raised when an upload exceeds the configured size cap."""
 
 
 def parse_upload(contents: str, filename: str) -> pd.DataFrame:
@@ -15,8 +39,12 @@ def parse_upload(contents: str, filename: str) -> pd.DataFrame:
         raise ValueError("Empty upload")
     header, b64 = contents.split(",", 1)
     raw = base64.b64decode(b64)
-    if len(raw) > MAX_BYTES:
-        raise ValueError(f"File too large ({len(raw)/1024/1024:.1f} MB > {MAX_BYTES/1024/1024:.0f} MB)")
+    cap = max_bytes()
+    if len(raw) > cap:
+        raise UploadTooLargeError(
+            f"File too large ({len(raw)/1024/1024:.1f} MB > {cap/1024/1024:.0f} MB). "
+            "Set DQT_MAX_UPLOAD_MB to raise the cap, or pre-aggregate the file."
+        )
 
     name = (filename or "").lower()
     buf = io.BytesIO(raw)

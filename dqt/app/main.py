@@ -25,6 +25,20 @@ from dqt.core.time_utils import infer_time_granularity
 from dqt.demo import make_demo_dataset
 from dqt.report.html_report import build_html_report
 
+_DEMO_ROWS_DEFAULT = 8000
+
+
+def _demo_rows() -> int:
+    """Demo dataset row count, honouring the DQT_DEMO_ROWS env override."""
+    raw = os.environ.get("DQT_DEMO_ROWS")
+    if not raw:
+        return _DEMO_ROWS_DEFAULT
+    try:
+        n = int(raw)
+    except ValueError:
+        return _DEMO_ROWS_DEFAULT
+    return max(100, min(n, 1_000_000))
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -33,6 +47,16 @@ def create_app() -> Dash:
     app = Dash(__name__, suppress_callback_exceptions=True, title="Data Quality Tool")
     app.layout = _layout()
     _register_callbacks(app)
+    # Mount the REST API on the underlying Flask server. Dash's own routes
+    # take precedence; the API lives at /api/v1/* so there is no overlap.
+    try:
+        from dqt.app.rest import register_api
+
+        register_api(app.server)
+    except Exception:  # noqa: BLE001 — REST is optional sugar, not load-bearing
+        import logging
+
+        logging.getLogger(__name__).exception("REST API mount failed")
     return app
 
 
@@ -392,6 +416,7 @@ def _register_callbacks(app: Dash):
         sess.columns_meta = {}
         sess.settings = {}
         sess.report_cache = None
+        STORE.save(sess)
         return _upload_status_msg(sess), _dataset_summary(sess), _upload_actions(True)
 
     # ---- Load demo dataset ----------------------------------------------
@@ -407,12 +432,13 @@ def _register_callbacks(app: Dash):
         if not (n_clicks or 0):
             return no_update, no_update, no_update
         sess = STORE.get_or_create(sid)
-        df = make_demo_dataset()
+        df = make_demo_dataset(n_rows=_demo_rows())
         sess.df = df
         sess.filename = "demo_loans (synthetic)"
         sess.columns_meta = {}
         sess.settings = {}
         sess.report_cache = None
+        STORE.save(sess)
         return _upload_status_msg(sess), _dataset_summary(sess), _upload_actions(True)
 
     # Re-renders the page so reset works even when already on /upload.
@@ -500,6 +526,7 @@ def _register_callbacks(app: Dash):
             return "❌ " + "; ".join(errs), no_update
         sess.columns_meta = {"time": t, "target": tg, "features": features}
         sess.report_cache = None
+        STORE.save(sess)
         return "", "/settings"
 
     # ---- Settings → Report ----------------------------------------------
@@ -525,6 +552,7 @@ def _register_callbacks(app: Dash):
             "target_kind_override": tkind,
         }
         sess.report_cache = None
+        STORE.save(sess)
         # Encode the session in the URL so the analysis can be re-opened or
         # shared with anyone hitting the same server.
         return "/report", f"?session={sid}"
