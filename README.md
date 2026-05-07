@@ -1,6 +1,6 @@
-# DQT — Data Quality Tool
+# Data Quality Tool
 
-> **Scoring-style tree binning + PSI (numeric & categorical) + pairwise z-score stability over time, in an interactive UI.**
+> **Data Quality Tool with Scoring-style tree binning + pairwise z-score stability over time + PSI (numeric & categorical), in an interactive UI.**
 
 For any tabular dataset with a time column and a target. Per-feature drill-down with severity badges, sticky sidebar, search and sort. CLI for CI / cron.
 
