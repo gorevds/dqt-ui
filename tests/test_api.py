@@ -10,7 +10,7 @@ from dqt.demo import make_demo_dataset
 
 def test_version_string():
     assert isinstance(__version__, str)
-    assert __version__ == "1.0.0"
+    assert __version__ == "1.0.1"
 
 
 def test_analyze_minimal_autodetect():
@@ -131,3 +131,14 @@ def test_analyze_raises_when_no_target_column():
     })
     with pytest.raises(ValueError, match="target_col"):
         analyze(df, time_col="snapshot_date")
+
+
+def test_drill_uses_filtered_rows_with_duplicate_index(binary_df):
+    df = binary_df.iloc[:500].copy()
+    df.index = [n // 2 for n in range(len(df))]
+    df.iloc[15, df.columns.get_loc("target")] = float("nan")
+    rep = analyze(df, time_col="date", target_col="target", features=["x_num"], drill_samples=10)
+    assert rep.meta["n_rows"] == 499
+    for bins in rep.feature("x_num").samples.values():
+        for rows in bins.values():
+            assert rows.target.notna().all()

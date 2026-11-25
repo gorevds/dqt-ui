@@ -443,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
                 df, score_col=args.score_col,
                 target_col=args.target, time_col=args.time,
                 granularity=args.granularity, max_bins=args.max_bins,
-                reference_df=reference_df,
+                psi_reference=args.psi_reference, reference_df=reference_df,
             )
             report = score_out["score_report"]
             calibration = score_out["calibration"]

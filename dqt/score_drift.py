@@ -3,13 +3,9 @@
 Most credit-risk teams care about a single column more than any other:
 the *score itself*. Was it stable this month? Is the calibration intact?
 
-This module is a thin convenience layer on top of :func:`dqt.api.analyze`
-that:
-
-1. Runs DQT with the score column **as the target** (so PSI / stability
-   describe the score, not features).
-2. Pulls a calibration delta — the absolute change in mean target rate
-   per score bucket between two periods (or against a reference).
+The report measures the score distribution in each time bucket, including
+periods whose outcome labels are still missing. Calibration uses labelled
+observations separately.
 
 Use from the CLI::
 
@@ -29,8 +25,15 @@ from typing import Optional
 
 import pandas as pd
 
-from dqt.api import analyze
-from dqt.core.target_utils import TargetKind, detect_target_kind
+from dqt.api import FeatureResult, Report
+from dqt.app.pipeline import _verdict_for
+from dqt.config import Config, severity_for
+from dqt.core.autodetect import autodetect_time_column
+from dqt.core.checks import missingness_over_time
+from dqt.core.quality import psi_over_time
+from dqt.core.target_utils import TargetKind, detect_target_kind, to_binary_target
+from dqt.core.time_utils import bucket_time
+from dqt.plots import plot_psi_over_time
 
 
 def analyze_score(
@@ -42,6 +45,7 @@ def analyze_score(
     granularity: str = "auto",
     max_bins: int = 5,
     reference_df: Optional[pd.DataFrame] = None,
+    psi_reference: str = "first",
 ) -> dict:
     """Run a score-centric analysis. Returns ``{score_report, calibration}``
     where ``score_report`` is a regular :class:`dqt.api.Report` and
@@ -51,11 +55,31 @@ def analyze_score(
     if score_col not in df.columns:
         raise KeyError(f"score column {score_col!r} not in dataframe")
 
-    # The score is what we want to monitor — pretend it is the target.
-    score_report = analyze(
-        df, time_col=time_col, target_col=score_col,
-        max_bins=max_bins, granularity=granularity,
-        reference_df=reference_df,
+    time_col = time_col or autodetect_time_column(df)
+    if time_col is None or time_col == score_col:
+        raise ValueError("Specify a time column distinct from the score")
+    data = pd.DataFrame({"period": bucket_time(df[time_col], granularity),
+                         "score": pd.to_numeric(df[score_col], errors="raise")}).dropna(subset=["period"])
+    if data.empty:
+        raise ValueError("No valid periods")
+    baseline = None if reference_df is None else reference_df[score_col]
+    series = psi_over_time(data, "score", "period", reference=psi_reference,
+                           reference_values=baseline, is_numeric=True)
+    missing = float(missingness_over_time(data, "score", "period")["missing_share"].max())
+    summary = {"psi_max": float(series.psi.astype(float).max()), "psi_mean": float(series.psi.astype(float).mean()),
+               "missing_share_max": missing}
+    thresholds = Config.load().for_feature(score_col)
+    feature = FeatureResult(
+        name=score_col, kind="numeric", summary=summary,
+        severity=severity_for(summary["psi_max"], None, missing, thresholds),
+        verdict=_verdict_for(summary, missing, False, thresholds),
+        figs={"psi": plot_psi_over_time(series, "period", thresholds=thresholds)},
+    )
+    score_report = Report(
+        meta={"time_col": time_col, "target_col": score_col, "target_kind": "score",
+              "granularity": granularity, "n_rows": len(data)},
+        features=[feature], summary_table=pd.DataFrame([{"feature": score_col, "type": "numeric",
+                                                      "severity": feature.severity, **summary}]),
     )
 
     calibration = None
@@ -63,8 +87,8 @@ def analyze_score(
         info = detect_target_kind(df[target_col])
         if info.kind == TargetKind.BINARY:
             calibration = _calibration_drift(
-                df, score_col=score_col, target_col=target_col,
-                time_col=score_report.meta["time_col"], n_buckets=max_bins,
+                df.assign(**{target_col: to_binary_target(df[target_col], info)}), score_col=score_col, target_col=target_col,
+                time_col=time_col, n_buckets=max_bins, granularity=granularity,
             )
 
     return {"score_report": score_report, "calibration": calibration}
@@ -72,7 +96,7 @@ def analyze_score(
 
 def _calibration_drift(
     df: pd.DataFrame, *, score_col: str, target_col: str,
-    time_col: str, n_buckets: int,
+    time_col: str, n_buckets: int, granularity: str = "auto",
 ) -> pd.DataFrame:
     """Per (period, score-quantile-bucket): observed default rate.
 
@@ -86,14 +110,14 @@ def _calibration_drift(
     """
     score = pd.to_numeric(df[score_col], errors="coerce")
     target = pd.to_numeric(df[target_col], errors="coerce")
-    period = df[time_col]
+    period = pd.Series(bucket_time(df[time_col], granularity), index=df.index)
     keep = score.notna() & target.notna() & period.notna()
     if not keep.any():
         return pd.DataFrame(columns=["period", "bucket", "score_lo",
                                       "score_hi", "n", "target_rate"])
 
     quantiles = pd.unique(score[keep].quantile(
-        [i / n_buckets for i in range(n_buckets + 1)]).round(6).to_numpy())
+        [i / n_buckets for i in range(n_buckets + 1)]).to_numpy())
     if len(quantiles) < 2:
         return pd.DataFrame(columns=["period", "bucket", "score_lo",
                                       "score_hi", "n", "target_rate"])

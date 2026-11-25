@@ -87,3 +87,19 @@ def test_analyze_score_works_without_target(scoring_df):
     out = analyze_score(df, score_col="score", time_col="period")
     assert out["calibration"] is None
     assert out["score_report"] is not None
+
+
+def test_score_only_cli_fails_on_shift_even_without_labels(tmp_path):
+    from dqt.cli import main
+
+    df = pd.DataFrame({"period": ["2026-01-01"] * 30 + ["2026-02-01"] * 30, "score": [0.] * 30 + [1.] * 30})
+    path = tmp_path / "scores.csv"
+    df.to_csv(path, index=False)
+    html = tmp_path / "report.html"
+    rc = main(["analyze", str(path), "--time", "period", "--score-col", "score",
+               "--fail-on", "red", "--output", str(html)])
+    assert rc == 2
+    report = html.read_text()
+    assert 'src="https://cdn.plot.ly' not in report
+    assert "Plotly.newPlot(" in report
+    assert "psi_max" in report

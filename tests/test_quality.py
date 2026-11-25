@@ -218,3 +218,20 @@ def test_pairwise_stability_regression_zero_se_skipped():
     out = pairwise_bin_stability(rate_df, "m", target_kind=TargetKind.REGRESSION)
     assert not out.empty
     assert 0.0 <= out["stability"].iloc[0] <= 1.0
+
+
+def test_psi_keeps_constant_and_tail_shifts():
+    assert psi(np.ones(100), np.zeros(100)) > 0.25
+    a = np.arange(100)
+    shifted = np.r_[a, np.repeat(999, 900)]
+    assert psi(a, shifted) > 0.25
+    assert psi(shifted, a) > 0.25
+    assert psi(shifted, shifted) == 0
+
+
+def test_bin_order_inversion_is_distinct_from_separation():
+    rate = pd.DataFrame({"month": [1, 1, 2, 2], "bin": ["a", "b"] * 2,
+                         "rate": [.1, .9, .9, .1], "count": [100] * 4})
+    out = pairwise_bin_stability(rate, "month")
+    assert out.stability.min() > .99
+    assert out.inversion_share.tolist() == [0, 1]

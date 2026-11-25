@@ -92,3 +92,19 @@ def test_unsafe_name_does_not_escape_dir(sandbox):
     # Must live under the configured DQT_BASELINES_DIR.
     assert str(sandbox / "baselines") in parquet_path
     assert "/../" not in parquet_path
+
+
+def test_colliding_names_and_checksum(sandbox):
+    from pathlib import Path
+
+    from dqt import baselines
+
+    a = baselines.freeze("risk May", pd.DataFrame({"x": [1]}))
+    b = baselines.freeze("risk_May", pd.DataFrame({"x": [2]}))
+    assert a["parquet"] != b["parquet"]
+    assert baselines.load("risk May").x.tolist() == [1]
+    baselines.delete("risk May")
+    assert baselines.load("risk_May").x.tolist() == [2]
+    Path(b["parquet"]).write_bytes(b"damaged")
+    with pytest.raises(ValueError, match="checksum"):
+        baselines.load("risk_May")

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from datetime import datetime
+from html import escape
 from typing import Iterable
 
 import plotly.io as pio
+from plotly.offline import get_plotlyjs
 
 _TEMPLATE = """<!doctype html>
 <html lang="en">
@@ -43,7 +45,7 @@ def build_html_report(
     """Render a self-contained HTML report. feature_blocks: dicts with keys
     `feature`, `summary` (dict), `figs` (list of plotly Figures).
     """
-    plotly_lib = '<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>'
+    plotly_lib = f"<script>{get_plotlyjs()}</script>"
     blocks = list(feature_blocks)
     pieces = []
     for blk in blocks:
@@ -52,21 +54,21 @@ def build_html_report(
             fig_html.append(pio.to_html(fig, include_plotlyjs=False, full_html=False,
                                         config={"displayModeBar": False}))
         summary_html = "".join(
-            f"<div><b>{k}:</b> {round(v, 3)}</div>" if isinstance(v, (int, float))
-            else f"<div><b>{k}:</b> {v}</div>"
+            f"<div><b>{escape(str(k))}:</b> {round(v, 3)}</div>" if isinstance(v, (int, float))
+            else f"<div><b>{escape(str(k))}:</b> {escape(str(v))}</div>"
             for k, v in (blk.get("summary") or {}).items()
         )
         pieces.append(
-            f'<div class="feature"><h2>{blk["feature"]}</h2>'
+            f'<div class="feature"><h2>{escape(str(blk["feature"]))}</h2>'
             f'<div class="summary">{summary_html}</div>'
             f'<div class="grid">{"".join(fig_html)}</div></div>'
         )
     return _TEMPLATE.format(
-        title=title,
+        title=escape(str(title)),
         plotly_lib=plotly_lib,
         generated_at=datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC"),
         n_features=len(blocks),
-        time_col=time_col,
-        target_col=target_col,
+        time_col=escape(str(time_col)),
+        target_col=escape(str(target_col)),
         features_html="\n".join(pieces),
     )
