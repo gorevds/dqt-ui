@@ -46,6 +46,18 @@ def _max_api_upload_bytes() -> int:
     return mb * 1024 * 1024
 
 
+def _workspace():
+    from flask import request
+    return (request.args.get("workspace") or request.form.get("workspace") or "default").strip().lower() or "default"
+
+
+def _accessible_run(run_id, permission="view"):
+    from dqt.auth import permitted
+    from dqt.runs import get
+    record = get(run_id)
+    return record if record and permitted(permission, record["workspace"]) else None
+
+
 def _require_perm(permission: str):
     """Decorator: short-circuit a view with 403 if RBAC denies the action.
 
@@ -58,16 +70,8 @@ def _require_perm(permission: str):
     def decorator(fn):
         @wraps(fn)
         def _wrapped(*args, **kwargs):
-            from flask import request as _flask_request
-            from flask import session as _flask_session
-
-            from dqt import rbac
-
-            email = (_flask_session.get("user") or {}).get("email")
-            ws = (_flask_request.args.get("workspace")
-                  or _flask_request.form.get("workspace")
-                  or "default")
-            if not rbac.check(email, permission, workspace=ws):
+            from dqt.auth import permitted
+            if not permitted(permission, _workspace()):
                 from flask import jsonify
 
                 resp = jsonify({"error": "forbidden", "code": 403,
@@ -141,13 +145,16 @@ def register_api(flask_app: Any) -> None:
         except ValueError as exc:
             return _err(400, str(exc))
 
+        from dqt.config import for_workspace
+        ws = _workspace()
         params = _form_params(request.form)
+        params["config"] = for_workspace(ws)
         try:
             report = analyze(df, **params)
         except (ValueError, KeyError) as exc:
             return _err(400, f"analyze failed: {exc}")
 
-        run_id = runs_save(report, source=f"api:{safe_name}")
+        run_id = runs_save(report, source=f"api:{safe_name}", workspace=ws)
         return jsonify({
             "run_id": run_id,
             "severity_counts": report.severity_counts(),
@@ -156,6 +163,7 @@ def register_api(flask_app: Any) -> None:
         })
 
     @bp.get("/runs")
+    @_require_perm("view")
     def _list_runs():
         from dqt.runs import list_runs
 
@@ -163,23 +171,21 @@ def register_api(flask_app: Any) -> None:
             limit = max(1, min(int(request.args.get("limit", 20)), 200))
         except ValueError:
             limit = 20
-        rows = list_runs(limit=limit)
+        from dqt.auth import is_active
+        ws = _workspace() if is_active() or "workspace" in request.args else None
+        rows = list_runs(limit=limit, workspace=ws)
         return jsonify({"runs": [_unwrap_runs_record(r) for r in rows]})
 
     @bp.get("/runs/<int:run_id>")
     def _get_run(run_id: int):
-        from dqt.runs import get as runs_get
-
-        record = runs_get(run_id)
+        record = _accessible_run(run_id)
         if record is None:
             return _err(404, f"run #{run_id} not found")
         return jsonify(_unwrap_runs_record(record))
 
     @bp.get("/runs/<int:run_id>/feature/<name>")
     def _get_feature(run_id: int, name: str):
-        from dqt.runs import get as runs_get
-
-        record = runs_get(run_id)
+        record = _accessible_run(run_id)
         if record is None:
             return _err(404, f"run #{run_id} not found")
         unwrapped = _unwrap_runs_record(record)
@@ -187,25 +193,29 @@ def register_api(flask_app: Any) -> None:
         for f in offenders:
             if isinstance(f, dict) and f.get("feature") == name:
                 return jsonify(_json_safe(f))
+        for row in unwrapped.get("summary") or []:
+            if row.get("feature") == name:
+                return jsonify(_json_safe({**row, "severity": "green"}))
         return _err(404, f"feature {name!r} not found in run #{run_id}")
 
     @bp.get("/runs/<int:a_id>/diff/<int:b_id>")
     def _diff_runs(a_id: int, b_id: int):
         from dqt.runs_compare import diff_runs
 
+        if not _accessible_run(a_id) or not _accessible_run(b_id):
+            return _err(404, "run not found")
         try:
             return jsonify(_json_safe(diff_runs(a_id, b_id)))
         except KeyError as exc:
             return _err(404, str(exc))
 
     @bp.post("/runs/<int:run_id>/share")
-    @_require_perm("share")
     def _share_token(run_id: int):
         from dqt import audit
-        from dqt.runs import get as runs_get
         from dqt.share_tokens import issue
 
-        if runs_get(run_id) is None:
+        record = _accessible_run(run_id, "share")
+        if record is None:
             return _err(404, f"run #{run_id} not found")
         body = request.get_json(silent=True) or {}
         ttl = body.get("ttl_days", 7)
@@ -214,7 +224,7 @@ def register_api(flask_app: Any) -> None:
         except (TypeError, ValueError):
             ttl_days = 7
         rec = issue(
-            run_id, ttl_days=ttl_days,
+            run_id, ttl_days=ttl_days, workspace=record["workspace"],
             description=body.get("description") if isinstance(body.get("description"), str) else None,
         )
         audit.record("share_token.api_issued",
@@ -231,7 +241,7 @@ def register_api(flask_app: Any) -> None:
         if rec is None:
             return _err(404, "share token invalid, expired, or revoked")
         run = runs_get(int(rec["run_id"]))
-        if run is None:
+        if run is None or rec["workspace"] != run["workspace"]:
             return _err(404, f"run #{rec['run_id']} no longer exists")
         audit.record("share_token.accessed",
                       {"token_prefix": token[:8] + "…", "run_id": run["id"]},

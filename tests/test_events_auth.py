@@ -110,24 +110,27 @@ def test_auth_active_with_env(monkeypatch):
     assert auth.is_active() is True
 
 
-def test_auth_decode_unverified_jwt():
-    from dqt.auth import _decode_id_token_unverified
+def test_oidc_factory_fails_closed(monkeypatch):
+    from dqt.app.main import create_app
 
-    # Header.body.sig — body is base64(json{"email": "x@y.com"}).
-    header = "eyJhbGciOiJSUzI1NiJ9"
-    import base64
-    body = base64.urlsafe_b64encode(b'{"email":"x@y.com","sub":"42"}').rstrip(b"=").decode()
-    jwt = f"{header}.{body}.sig"
-    claims = _decode_id_token_unverified(jwt)
-    assert claims["email"] == "x@y.com"
-    assert claims["sub"] == "42"
+    monkeypatch.setenv("DQT_AUTH", "oidc")
+    monkeypatch.delenv("DQT_AUTH_SECRET_KEY", raising=False)
+    with pytest.raises(RuntimeError, match="DQT_AUTH_SECRET_KEY"):
+        create_app()
 
 
-def test_auth_decode_garbage_returns_empty():
-    from dqt.auth import _decode_id_token_unverified
+def test_oidc_factory_protects_application(monkeypatch):
+    from dqt.app.main import create_app
 
-    assert _decode_id_token_unverified("not.a.jwt") == {}
-    assert _decode_id_token_unverified("") == {}
+    for key in ("DQT_OIDC_CLIENT_ID", "DQT_OIDC_CLIENT_SECRET", "DQT_AUTH_SECRET_KEY"):
+        monkeypatch.setenv(key, "test")
+    monkeypatch.setenv("DQT_AUTH", "oidc")
+    monkeypatch.setenv("DQT_OIDC_ISSUER", "https://example.test")
+    client = create_app().server.test_client()
+    assert client.get("/").location.endswith("/auth/login")
+    assert client.get("/api/v1/runs").status_code == 401
+    assert client.post("/_dash-update-component").status_code == 401
+    assert client.get("/api/v1/healthz").status_code == 200
 
 
 def test_runs_save_emits_run_created(sandbox, monkeypatch, binary_df):
@@ -232,3 +235,109 @@ def test_rbac_open_mode_allows_unauthenticated(sandbox, monkeypatch, binary_df):
         content_type="multipart/form-data",
     )
     assert r.status_code == 200
+
+
+def test_workspace_isolation_from_create_to_share(sandbox, monkeypatch, binary_df):
+    import io
+
+    from flask import Flask
+
+    from dqt import rbac, runs, workspaces
+    from dqt.app.rest import register_api
+    from dqt.app.runs_page import run_detail
+
+    monkeypatch.setenv("DQT_AUTH", "oidc")
+    server = Flask(__name__)
+    server.secret_key = "test"
+    register_api(server)
+    client = server.test_client()
+    ids = {}
+    for ws in ("risk", "sales"):
+        workspaces.create(ws)
+        email = f"{ws}@example.test"
+        rbac.grant(email, workspace=ws, role="owner")
+        with client.session_transaction() as session:
+            session["user"] = {"email": email, "sub": ws}
+        csv = binary_df.head(200).to_csv(index=False).encode()
+        res = client.post("/api/v1/runs", data={"workspace": ws, "time": "date", "target": "target",
+                                                "file": (io.BytesIO(csv), "data.csv")})
+        assert res.status_code == 200
+        ids[ws] = res.json["run_id"]
+        assert runs.get(ids[ws])["workspace"] == ws
+    own, other = ids["sales"], ids["risk"]
+    assert [r["id"] for r in client.get("/api/v1/runs?workspace=sales").json["runs"]] == [own]
+    assert client.get("/api/v1/runs?workspace=risk").status_code == 403
+    assert client.get(f"/api/v1/runs/{other}").status_code == 404
+    assert client.get(f"/api/v1/runs/{other}/feature/x_num").status_code == 404
+    assert client.get(f"/api/v1/runs/{own}/diff/{other}").status_code == 404
+    assert client.post(f"/api/v1/runs/{other}/share?workspace=sales").status_code == 404
+    token = client.post(f"/api/v1/runs/{own}/share").json["token"]
+    assert server.test_client().get(f"/api/v1/share/{token}").json["id"] == own
+    assert client.get(f"/api/v1/runs/{own}/feature/x_num").status_code == 200
+    with server.test_request_context():
+        from flask import session
+        session["user"] = {"email": "sales@example.test", "sub": "sales"}
+        assert run_detail(str(other)).children == "Run not found"
+
+
+def test_oidc_callback_verifies_signed_identity(monkeypatch, sandbox):
+    import time
+    from urllib.parse import parse_qs, urlparse
+
+    from joserfc import jwt
+    from joserfc.jwk import RSAKey
+
+    from dqt.app.main import create_app
+
+    issuer = "https://issuer.example.test"
+    for key, value in {"DQT_AUTH": "oidc", "DQT_OIDC_ISSUER": issuer,
+                       "DQT_OIDC_CLIENT_ID": "dqt", "DQT_OIDC_CLIENT_SECRET": "secret",
+                       "DQT_AUTH_SECRET_KEY": "local-test", "DQT_AUTH_ALLOWED_DOMAINS": "example.test"}.items():
+        monkeypatch.setenv(key, value)
+    app = create_app().server
+    provider = app.extensions["authlib.integrations.flask_client"].create_client("dqt_oidc")
+    key = RSAKey.generate_key(2048)
+    metadata = {"issuer": issuer, "authorization_endpoint": issuer + "/authorize",
+                "token_endpoint": issuer + "/token", "id_token_signing_alg_values_supported": ["RS256"],
+                "jwks": {"keys": [key.as_dict(private=False)]}}
+    monkeypatch.setattr(provider, "load_server_metadata", lambda: metadata)
+    client = app.test_client()
+    response = client.get("/auth/login", base_url="https://localhost")
+    params = parse_qs(urlparse(response.location).query)
+    now = int(time.time())
+    claims = {"iss": issuer, "aud": "dqt", "sub": "123", "nonce": params["nonce"][0],
+              "iat": now, "exp": now + 120, "email": "risk@example.test", "email_verified": True}
+    token = jwt.encode({"alg": "RS256"}, claims, key)
+    monkeypatch.setattr(provider, "fetch_access_token", lambda **kw: {"id_token": token, "access_token": "test"})
+    response = client.get("/auth/callback", base_url="https://localhost",
+                          query_string={"code": "test", "state": params["state"][0]})
+    assert response.status_code == 302 and response.location == "/"
+    with client.session_transaction() as session:
+        assert session["user"]["email"] == "risk@example.test"
+
+
+def test_private_analysis_permissions_and_session_ownership(monkeypatch, sandbox):
+    from flask import Flask, session
+    from werkzeug.exceptions import Forbidden
+
+    from dqt import auth, rbac
+    from dqt.app.store import SessionStore
+
+    monkeypatch.setenv("DQT_AUTH", "oidc")
+    store = SessionStore(start_sweeper=False)
+    server = Flask(__name__)
+    server.secret_key = "test"
+    rbac.grant("analyst@example.test", workspace="risk", role="analyst")
+    rbac.grant("viewer@example.test", workspace="risk", role="viewer")
+
+    with server.test_request_context():
+        session["user"] = {"sub": "analyst", "email": "analyst@example.test"}
+        assert auth.analysis_workspace() == "risk"
+        first = store.create()
+        session["user"] = {"sub": "viewer", "email": "viewer@example.test"}
+        with pytest.raises(Forbidden):
+            auth.require_analysis(lambda: None)()
+        assert store.get(first.sid) is None
+        assert store.reset(first.sid).sid != first.sid
+        session["user"] = {"sub": "analyst", "email": "analyst@example.test"}
+        assert store.get(first.sid) is first

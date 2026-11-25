@@ -11,6 +11,7 @@ Entry point for notebook / script usage:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from html import escape
 from pathlib import Path
 from typing import Optional, Union
 
@@ -93,10 +94,10 @@ class Report:
     def html(self) -> str:
         """Render as a self-contained HTML string."""
         from dqt.report.html_report import build_html_report
-        order = ("rate_summary", "rate_over_time", "bin_shares", "outliers")
+        order = ("rate_summary", "rate_over_time", "bin_shares", "outliers", "psi")
         blocks = [{
             "feature": f.name,
-            "summary": f.summary,
+            "summary": {**f.summary, "severity": f.severity, "verdict": f.verdict},
             "figs": [f.figs[k] for k in order if f.figs.get(k) is not None],
         } for f in self.features]
         return build_html_report(
@@ -125,10 +126,10 @@ class Report:
             )
         return (
             '<div style="font-family:ui-sans-serif,system-ui;padding:8px;">'
-            f'<h3 style="margin:0 0 6px;">DQT report — {m["target_col"]}</h3>'
+            f'<h3 style="margin:0 0 6px;">DQT report — {escape(str(m["target_col"]))}</h3>'
             f'<div style="color:#5b636e;font-size:13px;margin-bottom:10px;">'
-            f'{m["n_rows"]:,} rows · time: {m["time_col"]} ({m["granularity"]}) · '
-            f'target kind: {m["target_kind"]} · {len(self.features)} features</div>'
+            f'{m["n_rows"]:,} rows · time: {escape(str(m["time_col"]))} ({escape(str(m["granularity"]))}) · '
+            f'target kind: {escape(str(m["target_kind"]))} · {len(self.features)} features</div>'
             f'<div style="margin-bottom:12px;">'
             f'{chip("STABLE", counts["green"], "#dafbe1", "#1a7f37")}'
             f'{chip("WATCH",  counts["yellow"], "#fff8c5", "#9a6700")}'

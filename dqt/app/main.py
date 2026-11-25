@@ -6,7 +6,6 @@ Run prod: gunicorn -w 1 -b :8050 dqt.app.main:server
 from __future__ import annotations
 
 import argparse
-import base64
 import os
 
 import pandas as pd
@@ -47,16 +46,13 @@ def create_app() -> Dash:
     app = Dash(__name__, suppress_callback_exceptions=True, title="Data Quality Tool")
     app.layout = _layout()
     _register_callbacks(app)
-    # Mount the REST API on the underlying Flask server. Dash's own routes
-    # take precedence; the API lives at /api/v1/* so there is no overlap.
-    try:
-        from dqt.app.rest import register_api
+    from dqt import auth
+    from dqt.app.rest import register_api
+    from dqt.app.runs_page import register_runs_callbacks
 
-        register_api(app.server)
-    except Exception:  # noqa: BLE001 — REST is optional sugar, not load-bearing
-        import logging
-
-        logging.getLogger(__name__).exception("REST API mount failed")
+    auth.register(app.server)
+    register_api(app.server)
+    register_runs_callbacks(app)
     return app
 
 
@@ -330,10 +326,8 @@ def _page_report(sess):
                           ],
                           style={"width": "260px"}),
             html.Div(style={"flex": "1"}),
-            html.A(html.Button("⤓ Download HTML", style=_btn_style(),
-                                id="download-html-btn"),
-                   id="download-html", download="dqt_report.html", href="",
-                   target="_blank"),
+            html.Button("⤓ Download HTML", style=_btn_style(), id="download-html-btn"),
+            dcc.Download(id="download-html"),
         ], style={"display": "flex", "gap": "8px", "marginBottom": "16px",
                    "alignItems": "center", "flexWrap": "wrap"}),
         dcc.Loading(
@@ -352,6 +346,7 @@ def _page_report(sess):
 # ---------------------------------------------------------------------------
 
 def _register_callbacks(app: Dash):
+    from dqt.auth import analysis_workspace, require_analysis
 
     @app.callback(Output("sid", "data"),
                    [Input("url", "pathname"), Input("url", "search")],
@@ -378,6 +373,14 @@ def _register_callbacks(app: Dash):
     def _route(path, sid):
         sess = STORE.get_or_create(sid)
         path = path or "/"
+        if path == "/runs":
+            from dqt.app.runs_page import runs_page_layout
+            return runs_page_layout(), _nav("runs", sess)
+        if path.startswith("/runs/"):
+            from dqt.app.runs_page import run_detail
+            return run_detail(path[6:]), _nav("runs", sess)
+        if analysis_workspace() is None:
+            return html.Div([html.P("Workspace analysis permission required."), dcc.Link("Run history", href="/runs")]), None
         if path in ("/", "/upload"):
             page = _page_upload(sess)
             active = "upload"
@@ -405,6 +408,7 @@ def _register_callbacks(app: Dash):
         State("sid", "data"),
         prevent_initial_call=True,
     )
+    @require_analysis
     def _on_upload(contents, filename, sid):
         sess = STORE.get_or_create(sid)
         try:
@@ -428,6 +432,7 @@ def _register_callbacks(app: Dash):
         State("sid", "data"),
         prevent_initial_call=True,
     )
+    @require_analysis
     def _on_demo(n_clicks, sid):
         if not (n_clicks or 0):
             return no_update, no_update, no_update
@@ -452,6 +457,7 @@ def _register_callbacks(app: Dash):
         State("sid", "data"),
         prevent_initial_call=True,
     )
+    @require_analysis
     def _reset(n_logo, n_btn, sid):
         triggered = ctx.triggered_id
         if triggered == "logo-reset" and not (n_logo or 0):
@@ -468,6 +474,7 @@ def _register_callbacks(app: Dash):
     # ---- Columns hints + select-all/clear --------------------------------
     @app.callback(Output("time-hint", "children"),
                   Input("col-time", "value"), State("sid", "data"))
+    @require_analysis
     def _time_hint(col, sid):
         sess = STORE.get(sid)
         if not sess or not col or sess.df is None:
@@ -477,6 +484,7 @@ def _register_callbacks(app: Dash):
 
     @app.callback(Output("target-hint", "children"),
                   Input("col-target", "value"), State("sid", "data"))
+    @require_analysis
     def _target_hint(col, sid):
         sess = STORE.get(sid)
         if not sess or not col or sess.df is None:
@@ -487,6 +495,7 @@ def _register_callbacks(app: Dash):
     @app.callback(Output("col-features", "value"),
                   [Input("select-all-features", "n_clicks"), Input("clear-features", "n_clicks")],
                   [State("sid", "data"), State("col-time", "value"), State("col-target", "value")])
+    @require_analysis
     def _features_bulk(n_all, n_clear, sid, t, tg):
         if not ctx.triggered_id:
             return no_update
@@ -505,6 +514,7 @@ def _register_callbacks(app: Dash):
          State("col-features", "value"), State("sid", "data")],
         prevent_initial_call=True,
     )
+    @require_analysis
     def _columns_next(n, t, tg, features, sid):
         if not n:
             return no_update, no_update
@@ -540,6 +550,7 @@ def _register_callbacks(app: Dash):
          State("opt-target-kind", "value"), State("sid", "data")],
         prevent_initial_call=True,
     )
+    @require_analysis
     def _settings_next(n, method, max_bins, min_leaf, gran, psi_ref, outlier, tkind, sid):
         if not n:
             return no_update, no_update
@@ -559,22 +570,24 @@ def _register_callbacks(app: Dash):
 
     # ---- Report ----------------------------------------------------------
     @app.callback(
-        [Output("report-content", "children"), Output("report-status", "children"),
-         Output("download-html", "href")],
+        [Output("report-content", "children"), Output("report-status", "children")],
         [Input("url", "pathname"),
          Input("report-search", "value"), Input("report-sort", "value")],
         State("sid", "data"),
     )
+    @require_analysis
     def _render_report(path, search, sort_by, sid):
         if path != "/report":
-            return no_update, no_update, no_update
+            return no_update, no_update
         sess = STORE.get(sid)
         if sess is None or sess.df is None or not sess.columns_meta:
-            return html.Div("No data."), "", ""
+            return html.Div("No data."), ""
         if sess.report_cache is None:
             try:
                 feature_kinds = _infer_feature_kinds(sess.df, sess.columns_meta["features"])
+                from dqt.config import for_workspace
                 result = run_analysis(
+                    config=for_workspace(analysis_workspace()),
                     df=sess.df,
                     time_col=sess.columns_meta["time"],
                     target_col=sess.columns_meta["target"],
@@ -592,13 +605,23 @@ def _register_callbacks(app: Dash):
                 sess.report_cache = result
             except Exception as e:
                 return html.Div(f"❌ Analysis failed: {e}",
-                                style={"color": "#cf222e"}), "", ""
+                                style={"color": "#cf222e"}), ""
 
         result = sess.report_cache
         view = _render_report_view(
             result, search=search or "", sort_by=sort_by or "stability_desc",
         )
-        return view, _render_status(result), _build_html_data_url(result)
+        return view, _render_status(result)
+
+    @app.callback(Output("download-html", "data"), Input("download-html-btn", "n_clicks"),
+                  State("sid", "data"), prevent_initial_call=True)
+    @require_analysis
+    def download_report(clicks, sid):
+        sess = STORE.get(sid)
+        if not clicks or not sess or not sess.report_cache:
+            return no_update
+        return dcc.send_string(_build_html(sess.report_cache), "dqt_report.html")
+
 
 
 def _render_status(result):
@@ -650,27 +673,8 @@ def _render_report_view(result, search: str = "", sort_by: str = "stability_desc
         style_cell={"fontSize": "13px", "padding": "6px 10px"},
         style_header={"backgroundColor": "#f6f8fa", "fontWeight": "bold"},
         style_data_conditional=[
-            {"if": {"column_id": "psi_max", "filter_query": "{psi_max} > 0.25"},
-              "backgroundColor": "#ffebe9"},
-            {"if": {"column_id": "psi_max",
-                     "filter_query": "{psi_max} > 0.1 && {psi_max} <= 0.25"},
-              "backgroundColor": "#fff8c5"},
-            {"if": {"column_id": "stability_min", "filter_query": "{stability_min} < 0.6"},
-              "backgroundColor": "#ffebe9"},
-            {"if": {"column_id": "stability_min",
-                     "filter_query": "{stability_min} >= 0.6 && {stability_min} < 0.8"},
-              "backgroundColor": "#fff8c5"},
-            {"if": {"column_id": "stability_mean", "filter_query": "{stability_mean} < 0.6"},
-              "backgroundColor": "#ffebe9"},
-            {"if": {"column_id": "stability_mean",
-                     "filter_query": "{stability_mean} >= 0.6 && {stability_mean} < 0.8"},
-              "backgroundColor": "#fff8c5"},
-            {"if": {"column_id": "missing_share_max",
-                     "filter_query": "{missing_share_max} > 0.5"},
-              "backgroundColor": "#ffebe9"},
-            {"if": {"column_id": "missing_share_max",
-                     "filter_query": "{missing_share_max} > 0.2 && {missing_share_max} <= 0.5"},
-              "backgroundColor": "#fff8c5"},
+            {"if": {"column_id": "severity", "filter_query": '{severity} = "red"'}, "backgroundColor": "#ffebe9"},
+            {"if": {"column_id": "severity", "filter_query": '{severity} = "yellow"'}, "backgroundColor": "#fff8c5"},
         ],
     )
     visible_features = _filtered_features(result["features"], search, sort_by)
@@ -733,7 +737,7 @@ def _render_report_view(result, search: str = "", sort_by: str = "stability_desc
                                   "verticalAlign": "middle"}),
             ]),
             html.Div(blk.get("verdict", ""), className="verdict"),
-            html.Div(_summary_chips(blk["summary"])),
+            html.Div(_summary_chips(blk["summary"], blk["thresholds"])),
         ]
         if bins_block is not None:
             card_children.append(bins_block)
@@ -787,33 +791,33 @@ def _no_outliers_badge():
                             "marginTop": "8px"})
 
 
-def _summary_chips(summary):
+def _summary_chips(summary, thresholds):
     chips = []
     for k, v in summary.items():
         cls = "chip"
         if isinstance(v, (int, float)) and not (v != v):  # not NaN
             if k.startswith("psi"):
-                if v > 0.25:
+                if v > thresholds.psi_red:
                     cls = "chip danger"
-                elif v > 0.1:
+                elif v > thresholds.psi_yellow:
                     cls = "chip warn"
             elif k.startswith("stability"):
                 # Stability is inverse: 1 = perfect separation, 0.5 = overlap.
-                if v < 0.6:
+                if v < thresholds.stability_red:
                     cls = "chip danger"
-                elif v < 0.8:
+                elif v < thresholds.stability_yellow:
                     cls = "chip warn"
             elif k == "missing_share_max":
-                if v > 0.5:
+                if v > thresholds.missing_red:
                     cls = "chip danger"
-                elif v > 0.2:
+                elif v > thresholds.missing_yellow:
                     cls = "chip warn"
         text = f"{k}: {round(v, 3)}" if isinstance(v, (int, float)) else f"{k}: {v}"
         chips.append(html.Span(text, className=cls))
     return chips
 
 
-def _build_html_data_url(result):
+def _build_html(result):
     # Mirror the on-screen layout in the exported HTML.
     order = ("rate_summary", "rate_over_time", "bin_shares", "outliers")
     feature_blocks = []
@@ -822,17 +826,16 @@ def _build_html_data_url(result):
         flat = [figs[k] for k in order if figs.get(k) is not None]
         feature_blocks.append({
             "feature": blk["feature"],
-            "summary": blk["summary"],
+            "summary": {**blk["summary"], "severity": blk["severity"], "verdict": blk["verdict"]},
             "figs": flat,
         })
-    html_doc = build_html_report(
+    return build_html_report(
         title=result["meta"]["target_col"],
         time_col=result["meta"]["time_col"],
         target_col=result["meta"]["target_col"],
         feature_blocks=feature_blocks,
     )
-    b64 = base64.b64encode(html_doc.encode()).decode()
-    return f"data:text/html;base64,{b64}"
+
 
 
 # ---------------------------------------------------------------------------
@@ -882,6 +885,7 @@ def _nav(active, sess):
             [html.Span(str(i + 1), className="num"), html.Span(label)],
             href=f"/{key}", className=cls,
         ))
+    children.append(dcc.Link("Run history", href="/runs"))
     return html.Div(children, className="stepper")
 
 

@@ -186,6 +186,14 @@ def check(email: Optional[str], permission: str, *,
     return permission in role_permissions(row[0], workspace=ws)
 
 
+def workspaces_for(email: str, permission: str) -> list[str]:
+    """Return permitted memberships, preferring the default workspace."""
+    with _conn() as c:
+        rows = c.execute("SELECT workspace, role FROM rbac_members WHERE email=? "
+                         "ORDER BY workspace <> 'default', workspace", (email.strip().lower(),)).fetchall()
+    return [ws for ws, role in rows if permission in role_permissions(role, workspace=ws)]
+
+
 def _custom_role_exists(workspace: Optional[str], role: str) -> bool:
     ws = _normalise(workspace)
     with _conn() as c:
