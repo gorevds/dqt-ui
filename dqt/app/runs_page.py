@@ -64,6 +64,7 @@ def runs_page_layout(default_workspace: str = "default") -> html.Div:
             dash_table.DataTable(
                 id="runs-list",
                 columns=[
+                    {"name": "Report", "id": "detail", "presentation": "markdown"},
                     {"name": "id",          "id": "id",          "type": "numeric"},
                     {"name": "created",     "id": "created_at"},
                     {"name": "workspace",   "id": "workspace"},
@@ -102,11 +103,23 @@ def register_runs_callbacks(app, store=None) -> None:
         Input("runs-target", "value"),
     )
     def _refresh(_n, workspace_slug, severity, target_substr):
+        from dqt.auth import is_active, permitted
         from dqt.runs import list_runs
         from dqt.workspaces import list_workspaces
 
-        ws_opts = [{"label": w["slug"], "value": w["slug"]} for w in list_workspaces()]
+        if is_active():
+            from flask import session
+
+            from dqt.rbac import workspaces_for
+            slugs = workspaces_for(session["user"]["email"], "view")
+        else:
+            slugs = [w["slug"] for w in list_workspaces()]
+        ws_opts = [{"label": slug, "value": slug} for slug in slugs]
+        workspace_slug = workspace_slug or "default"
+        if not permitted("view", workspace_slug):
+            return [], "Select an accessible workspace", ws_opts
         rows = list_runs(workspace=workspace_slug, limit=200)
+        rows = [dict(r, detail=f"[Open](/runs/{r['id']})") for r in rows]
         rows = _filter_rows(rows, severity=severity, target_substr=target_substr)
         status = f"{len(rows)} run(s)"
         return rows, status, ws_opts
@@ -125,3 +138,18 @@ def _filter_rows(rows: list[dict], *,
         rows = [r for r in rows
                 if needle in (r.get("target_col") or "").lower()]
     return rows
+
+
+def run_detail(raw_id: str):
+    from dqt.auth import permitted
+    from dqt.runs import get
+
+    record = get(int(raw_id)) if raw_id.isascii() and raw_id.isdigit() and len(raw_id) < 19 else None
+    if not record or not permitted("view", record["workspace"]):
+        return html.Div("Run not found")
+    rows = record.get("summary") or []
+    return html.Div([
+        dcc.Link("Run history", href="/runs"), html.H2(f"Run #{record['id']}"),
+        html.P(record.get("source")), dash_table.DataTable(data=rows,
+            columns=[{"name": key, "id": key} for key in dict.fromkeys(k for r in rows for k in r)]),
+    ])

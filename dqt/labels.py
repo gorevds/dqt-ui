@@ -158,19 +158,9 @@ def _metrics(scores: pd.Series, labels: pd.Series, *,
 
 
 def _auc(scores: np.ndarray, labels: np.ndarray) -> float:
-    """ROC-AUC via Mann-Whitney U statistic. Avoids sklearn for the
-    happy path so this module has no extra import burden.
-    """
-    order = np.argsort(scores)
-    ranks = np.empty_like(order, dtype=float)
-    ranks[order] = np.arange(1, len(scores) + 1)
-    pos_mask = labels.astype(bool)
-    n_pos = int(pos_mask.sum())
-    n_neg = int(len(labels) - n_pos)
-    if n_pos == 0 or n_neg == 0:
-        return float("nan")
-    sum_ranks_pos = float(ranks[pos_mask].sum())
-    return (sum_ranks_pos - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
+    from sklearn.metrics import roc_auc_score
+
+    return float(roc_auc_score(labels, scores))
 
 
 def _ks(scores: np.ndarray, labels: np.ndarray) -> float:

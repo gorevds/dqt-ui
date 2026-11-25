@@ -21,7 +21,7 @@ def palette_for(bins: list) -> dict:
     return {b: PALETTE[i % len(PALETTE)] for i, b in enumerate(bins)}
 
 
-def plot_bin_shares_over_time(rate_df, time_col: str, psi_df=None) -> go.Figure:
+def plot_bin_shares_over_time(rate_df, time_col: str, psi_df=None, psi_red=0.25) -> go.Figure:
     """Bin shares per time bucket; optional PSI overlay on a secondary axis."""
     fig = go.Figure()
     if rate_df.empty:
@@ -64,7 +64,7 @@ def plot_bin_shares_over_time(rate_df, time_col: str, psi_df=None) -> go.Figure:
             hovertemplate="PSI: %{y:.3f}<extra></extra>",
         ))
         # Red dots only at the alarming PSI values; the line stays gray.
-        red_mask = psi_y > 0.25
+        red_mask = psi_y > psi_red
         if red_mask.any():
             fig.add_trace(go.Scatter(
                 x=psi_x[red_mask], y=psi_y[red_mask],

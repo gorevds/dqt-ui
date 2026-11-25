@@ -25,7 +25,7 @@ process — no Redis, no Postgres, no AGPL traps.
 - **Feature distribution over time** — quantile bands for numerics, stacked share for categoricals.
 - **Target rate per tree-binned bucket per period** — does the relationship between each feature and the target hold up across the timeline?
 - **Drift checks** — PSI for both numeric and categorical features, missingness over time, outlier share (IQR / Z-score), type-consistency.
-- **Pairwise z-score bin stability** — Φ(z) over every bin pair per period, averaged. 1 = bins remain well-separated, 0.5 = they overlap. Comes from the same scoring methodology that originally inspired this tool.
+- **Pairwise z-score bin stability** — Φ(z) over every bin pair per period, averaged. 1 = bins remain well-separated, 0.5 = they overlap. The separate `inversion_share_max` metric reports the largest share of comparable bin pairs whose target-rate order reversed relative to the first period.
 - **Per-feature triage** — green/yellow/red severity badge, one-line human-readable verdict, sticky sidebar with severity dots, search + multi-direction sort.
 - **Standalone HTML export** — single self-contained file for sharing.
 - **CLI** — `dqt analyze data.csv -o report.html --fail-on=red` returns non-zero in CI when something drifts.
@@ -235,3 +235,15 @@ Uploaded data lives in **server process memory only**. There is no disk persiste
 ## License
 
 MIT.
+
+
+### Workspace access
+
+Set `DQT_AUTH=oidc`, `DQT_AUTH_SECRET_KEY`, `DQT_OIDC_ISSUER` (HTTPS),
+`DQT_OIDC_CLIENT_ID` and `DQT_OIDC_CLIENT_SECRET` to enable sign-in. Register
+the public HTTPS callback URL ending in `/auth/callback`. The provider must
+return a verified email. `DQT_AUTH_ALLOWED_DOMAINS` optionally restricts domains.
+Grant workspace roles with `dqt.rbac.grant`. In this mode interactive sessions
+belong to the signed-in user. The interactive analysis uses the default workspace if permitted, otherwise the first permitted workspace in alphabetical order. Use an expiring report share token for other readers.
+Open `/runs` for workspace history. Set `workspace` when creating or listing
+runs via REST. The default workspace is `default`.

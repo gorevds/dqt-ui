@@ -92,3 +92,14 @@ def test_delete_for_run(sandbox, binary_df):
     n = delete_for_run(run_id)
     assert n >= 1
     assert list_for_run(run_id) == []
+
+
+def test_auc_and_gini_with_tied_scores_are_independent_of_order():
+    import pandas as pd
+
+    from dqt.labels import _metrics
+
+    for labels in ([0, 0, 1, 1], [1, 1, 0, 0]):
+        metrics = _metrics(pd.Series([1.] * 4), pd.Series(labels), period=None)
+        assert metrics["auc"] == .5
+        assert metrics["gini"] == 0
