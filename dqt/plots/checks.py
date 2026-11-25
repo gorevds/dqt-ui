@@ -42,7 +42,7 @@ def plot_outlier_share_over_time(df, time_col: str) -> go.Figure:
     return fig
 
 
-def plot_psi_over_time(df, time_col: str) -> go.Figure:
+def plot_psi_over_time(df, time_col: str, thresholds=None) -> go.Figure:
     fig = go.Figure()
     if df.empty:
         fig.update_layout(title=_title("no data"))
@@ -52,10 +52,12 @@ def plot_psi_over_time(df, time_col: str) -> go.Figure:
         mode="lines+markers", line=dict(color="rgb(44, 160, 44)", width=2),
         hovertemplate="PSI: %{y:.3f}<extra></extra>",
     ))
-    fig.add_hline(y=0.1, line_dash="dot", line_color="orange",
-                  annotation_text="0.1", annotation_position="right")
-    fig.add_hline(y=0.25, line_dash="dot", line_color="red",
-                  annotation_text="0.25", annotation_position="right")
+    from dqt.config import Thresholds
+    thresholds = thresholds or Thresholds()
+    fig.add_hline(y=thresholds.psi_yellow, line_dash="dot", line_color="orange",
+                  annotation_text=str(thresholds.psi_yellow), annotation_position="right")
+    fig.add_hline(y=thresholds.psi_red, line_dash="dot", line_color="red",
+                  annotation_text=str(thresholds.psi_red), annotation_position="right")
     fig.update_layout(
         title=_title("PSI vs reference"),
         xaxis_title=None, yaxis_title="PSI",

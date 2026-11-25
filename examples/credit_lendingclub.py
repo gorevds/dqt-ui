@@ -19,7 +19,6 @@ To convert to an .ipynb run::
 from __future__ import annotations
 
 # %% Imports --------------------------------------------------------------
-
 import tempfile
 from pathlib import Path
 
@@ -27,7 +26,6 @@ import pandas as pd
 
 from dqt import analyze
 from dqt.demo import make_demo_dataset
-
 
 # %% Generate synthetic data ---------------------------------------------
 

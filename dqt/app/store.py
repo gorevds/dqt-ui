@@ -59,6 +59,15 @@ def _jsonify(obj: Any) -> Any:
     return obj
 
 
+def _session_owner():
+    from flask import has_request_context, session
+
+    from dqt.auth import is_active
+    if has_request_context() and is_active():
+        return session["user"]["sub"]
+    return None
+
+
 @dataclass
 class Session:
     sid: str
@@ -69,6 +78,7 @@ class Session:
     columns_meta: dict = field(default_factory=dict)
     settings: dict = field(default_factory=dict)
     report_cache: Optional[dict] = None
+    owner: Optional[str] = None
 
 
 class SessionStore:
@@ -115,7 +125,7 @@ class SessionStore:
         sid = uuid.uuid4().hex
         with self._lock:
             now = time.time()
-            sess = Session(sid=sid, created_at=now, last_seen=now)
+            sess = Session(sid=sid, created_at=now, last_seen=now, owner=_session_owner())
             self._sessions[sid] = sess
             self._enforce_cap_locked()
             self._persist_locked(sess)
@@ -126,7 +136,7 @@ class SessionStore:
             return None
         with self._lock:
             sess = self._sessions.get(sid)
-            if sess is None:
+            if sess is None or sess.owner != _session_owner():
                 return None
             sess.last_seen = time.time()
             self._sessions.move_to_end(sid)  # LRU bump
@@ -140,9 +150,11 @@ class SessionStore:
 
     def reset(self, sid: str) -> Session:
         with self._lock:
+            if _session_owner() is not None and self.get(sid) is None:
+                return self.create()
             self._evict_locked(sid)
             now = time.time()
-            new = Session(sid=sid, created_at=now, last_seen=now)
+            new = Session(sid=sid, created_at=now, last_seen=now, owner=_session_owner())
             self._sessions[sid] = new
             self._persist_locked(new)
             return new
@@ -203,7 +215,7 @@ class SessionStore:
             meta_path = self._persist_dir / f"{sess.sid}.json"
             df_path = self._persist_dir / f"{sess.sid}.parquet"
             meta = _jsonify({
-                "sid": sess.sid,
+                "sid": sess.sid, "owner": sess.owner,
                 "created_at": sess.created_at,
                 "last_seen": sess.last_seen,
                 "filename": sess.filename,
@@ -274,7 +286,7 @@ class SessionStore:
             except (TypeError, ValueError):
                 created_at = time.time()
             sess = Session(
-                sid=sid,
+                sid=sid, owner=meta.get("owner"),
                 created_at=created_at,
                 last_seen=last_seen,
                 filename=meta.get("filename"),
