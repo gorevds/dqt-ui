@@ -1,0 +1,213 @@
+openapi: 3.0.3
+info:
+  title: DQT REST API
+  version: 1.0.0
+  description: |
+    REST surface mounted on top of the DQT Dash app's Flask server.
+    Lets external tools post a CSV/Parquet, get a run id back, and pull
+    per-feature drift verdicts without going through the Dash UI.
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+  - url: https://dqt.gorev.space/api/v1
+    description: Public demo
+  - url: http://localhost:8050/api/v1
+    description: Local
+
+paths:
+  /healthz:
+    get:
+      summary: Liveness probe
+      operationId: healthz
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, enum: [ok]}
+                  version: {type: string}
+
+  /runs:
+    get:
+      summary: List recent runs
+      operationId: listRuns
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 200, default: 20}
+      responses:
+        "200":
+          description: List of runs (oldest first inside the page)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  runs:
+                    type: array
+                    items: {$ref: "#/components/schemas/RunSummary"}
+    post:
+      summary: Create a run from an uploaded dataset
+      operationId: createRun
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CSV or Parquet payload
+                time:
+                  type: string
+                  description: Time column (auto-detected if omitted)
+                target:
+                  type: string
+                  description: Target column (auto-detected if omitted)
+                features:
+                  type: string
+                  description: Comma-separated feature columns (default — all but time/target)
+                granularity:
+                  type: string
+                  enum: [auto, as_is, day, week, month, quarter, year]
+                  default: auto
+                max_bins:
+                  type: integer
+                  minimum: 2
+                  maximum: 12
+                  default: 3
+                min_samples_leaf:
+                  type: number
+                  format: float
+                  default: 0.05
+                psi_reference:
+                  type: string
+                  enum: [first, previous]
+                  default: first
+                outlier_method:
+                  type: string
+                  enum: [iqr, z]
+                  default: z
+      responses:
+        "200":
+          description: Run created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  run_id: {type: integer}
+                  severity_counts: {$ref: "#/components/schemas/SeverityCounts"}
+                  n_features: {type: integer}
+                  meta: {$ref: "#/components/schemas/RunMeta"}
+        "400":
+          description: Bad input (parse failure, no time column, etc.)
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+        "413":
+          description: Payload too large
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /runs/{id}:
+    get:
+      summary: Fetch a run record
+      operationId: getRun
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+      responses:
+        "200":
+          description: Run details
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RunRecord"}
+        "404":
+          description: Run not found
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+  /runs/{id}/feature/{name}:
+    get:
+      summary: Fetch a single feature's verdict from a run
+      operationId: getRunFeature
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: integer}}
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Feature verdict
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Offender"}
+        "404":
+          description: Run or feature not found
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Error"}
+
+components:
+  schemas:
+    Error:
+      type: object
+      required: [error, code]
+      properties:
+        error: {type: string}
+        code: {type: integer}
+
+    SeverityCounts:
+      type: object
+      properties:
+        green: {type: integer}
+        yellow: {type: integer}
+        red: {type: integer}
+
+    RunMeta:
+      type: object
+      properties:
+        time_col: {type: string}
+        target_col: {type: string}
+        target_kind: {type: string, enum: [binary, multiclass, regression]}
+        granularity: {type: string}
+        n_rows: {type: integer}
+
+    RunSummary:
+      type: object
+      properties:
+        id: {type: integer}
+        created_at: {type: string, format: date-time}
+        target_col: {type: string}
+        red: {type: integer}
+        yellow: {type: integer}
+        green: {type: integer}
+        n_features: {type: integer}
+        n_rows: {type: integer}
+        source: {type: string}
+
+    RunRecord:
+      allOf:
+        - $ref: "#/components/schemas/RunSummary"
+        - type: object
+          properties:
+            offenders:
+              type: array
+              items: {$ref: "#/components/schemas/Offender"}
+
+    Offender:
+      type: object
+      properties:
+        feature: {type: string}
+        severity: {type: string, enum: [green, yellow, red]}
+        verdict: {type: string}
+        psi_max: {type: number}
+        stability_min: {type: number}
+        missing_share_max: {type: number}

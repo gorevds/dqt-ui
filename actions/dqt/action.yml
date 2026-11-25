@@ -1,0 +1,193 @@
+name: DQT — Data Quality Tool
+description: >-
+  Run DQT against a CSV/Parquet/SQL source, fail the build on drift, and
+  upload the HTML report as a workflow artefact. Wraps `dqt analyze` from
+  the official PyPI package.
+author: gorevds
+branding:
+  icon: bar-chart-2
+  color: blue
+
+inputs:
+  data:
+    description: Path to the input CSV/Parquet (relative to the workspace).
+    required: false
+  sql-uri:
+    description: SQLAlchemy URL when reading from a database. Mutually exclusive with `data`.
+    required: false
+  sql-source:
+    description: Table name or SELECT query when `sql-uri` is given.
+    required: false
+  reference:
+    description: Optional baseline CSV/Parquet for PSI comparison.
+    required: false
+  time:
+    description: Time column. Auto-detected if omitted.
+    required: false
+  target:
+    description: Target column. Auto-detected if omitted.
+    required: false
+  positive-class:
+    description: For multiclass — binarise against this class (1 = match, 0 = other).
+    required: false
+  features:
+    description: Space-separated list of feature columns. Defaults to all but time/target.
+    required: false
+  max-bins:
+    description: Maximum number of bins per feature.
+    required: false
+    default: "3"
+  granularity:
+    description: Time bucket granularity (auto / day / week / month / quarter / year).
+    required: false
+    default: auto
+  fail-on:
+    description: Exit non-zero when any feature reaches this severity (none / yellow / red).
+    required: false
+    default: red
+  output:
+    description: Output HTML report path.
+    required: false
+    default: dqt-report.html
+  notify:
+    description: Slack/Teams/JSON webhook URL to POST a summary to.
+    required: false
+  notify-format:
+    description: Payload format for the webhook (slack / json).
+    required: false
+    default: slack
+  python-version:
+    description: Python version to set up.
+    required: false
+    default: "3.11"
+  dqtui-version:
+    description: Pin the dqtui package version (default — latest on PyPI).
+    required: false
+    default: ""
+  upload-artifact:
+    description: Upload the HTML report as a workflow artefact (true / false).
+    required: false
+    default: "true"
+  artifact-name:
+    description: Artefact name when upload-artifact is true.
+    required: false
+    default: dqt-report
+
+outputs:
+  report-path:
+    description: Absolute path to the generated HTML report.
+    value: ${{ steps.run.outputs.report-path }}
+  severity:
+    description: Worst severity observed across features (green / yellow / red).
+    value: ${{ steps.run.outputs.severity }}
+  red-count:
+    description: Number of features at DRIFT severity.
+    value: ${{ steps.run.outputs.red-count }}
+  yellow-count:
+    description: Number of features at WATCH severity.
+    value: ${{ steps.run.outputs.yellow-count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate runner OS
+      if: runner.os == 'Windows'
+      shell: bash
+      run: |
+        echo "::error::dqt-action does not support Windows runners — use ubuntu-latest or macos-latest, or invoke `dqt analyze` directly."
+        exit 1
+
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: ${{ inputs.python-version }}
+
+    - name: Install dqtui
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.dqtui-version }}" ]; then
+          pip install --quiet "dqtui==${{ inputs.dqtui-version }}"
+        else
+          pip install --quiet dqtui
+        fi
+        dqt --help >/dev/null
+
+    - name: Run dqt analyze
+      id: run
+      shell: bash
+      env:
+        DQT_INPUT: ${{ inputs.data }}
+        DQT_SQL_URI: ${{ inputs.sql-uri }}
+        DQT_SQL_SOURCE: ${{ inputs.sql-source }}
+        DQT_REFERENCE: ${{ inputs.reference }}
+        DQT_TIME: ${{ inputs.time }}
+        DQT_TARGET: ${{ inputs.target }}
+        DQT_POSITIVE_CLASS: ${{ inputs.positive-class }}
+        DQT_FEATURES: ${{ inputs.features }}
+        DQT_MAX_BINS: ${{ inputs.max-bins }}
+        DQT_GRANULARITY: ${{ inputs.granularity }}
+        DQT_FAIL_ON: ${{ inputs.fail-on }}
+        DQT_OUTPUT: ${{ inputs.output }}
+        DQT_NOTIFY: ${{ inputs.notify }}
+        DQT_NOTIFY_FORMAT: ${{ inputs.notify-format }}
+      run: |
+        set -e
+        # Build the command without quoting empties; argparse treats absent
+        # flags as unset, which is what we want.
+        ARGS=(analyze)
+        [ -n "$DQT_INPUT" ] && ARGS+=("$DQT_INPUT")
+        [ -n "$DQT_SQL_URI" ] && ARGS+=(--sql-uri "$DQT_SQL_URI")
+        [ -n "$DQT_SQL_SOURCE" ] && ARGS+=(--sql-source "$DQT_SQL_SOURCE")
+        [ -n "$DQT_REFERENCE" ] && ARGS+=(--reference "$DQT_REFERENCE")
+        [ -n "$DQT_TIME" ] && ARGS+=(--time "$DQT_TIME")
+        [ -n "$DQT_TARGET" ] && ARGS+=(--target "$DQT_TARGET")
+        [ -n "$DQT_POSITIVE_CLASS" ] && ARGS+=(--positive-class "$DQT_POSITIVE_CLASS")
+        if [ -n "$DQT_FEATURES" ]; then
+          # shellcheck disable=SC2206
+          FEAT_ARR=($DQT_FEATURES)
+          ARGS+=(--features "${FEAT_ARR[@]}")
+        fi
+        ARGS+=(--max-bins "$DQT_MAX_BINS")
+        ARGS+=(--granularity "$DQT_GRANULARITY")
+        ARGS+=(--fail-on "$DQT_FAIL_ON")
+        ARGS+=(--output "$DQT_OUTPUT")
+        ARGS+=(--save-run)
+        [ -n "$DQT_NOTIFY" ] && ARGS+=(--notify "$DQT_NOTIFY" --notify-format "$DQT_NOTIFY_FORMAT")
+
+        # Capture exit code without aborting the step — we still want to publish
+        # the report and outputs even when --fail-on triggered a failure.
+        set +e
+        dqt "${ARGS[@]}"
+        rc=$?
+        set -e
+
+        # Surface the absolute path for the upload step.
+        abs_path="$(realpath "$DQT_OUTPUT")"
+        echo "report-path=$abs_path" >> "$GITHUB_OUTPUT"
+
+        # Re-derive severity from the saved run for downstream steps.
+        python - <<'PY' >> "$GITHUB_OUTPUT"
+        from dqt import runs as _r
+        rows = _r.list_runs(limit=1)
+        if not rows:
+            print("severity=green"); print("red-count=0"); print("yellow-count=0")
+        else:
+            r = rows[0]
+            red = r.get("red") or 0
+            yellow = r.get("yellow") or 0
+            sev = "red" if red else ("yellow" if yellow else "green")
+            print(f"severity={sev}")
+            print(f"red-count={red}")
+            print(f"yellow-count={yellow}")
+        PY
+
+        # Re-raise the dqt analyze exit code so --fail-on still fails the job.
+        exit $rc
+
+    - name: Upload report artefact
+      if: ${{ always() && inputs.upload-artifact == 'true' }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ steps.run.outputs.report-path }}
+        if-no-files-found: warn

@@ -36,6 +36,23 @@ def test_pipeline_multiclass(multiclass_df):
     # multiclass falls back to regression-style binning
     assert result["meta"]["target_kind"] == "multiclass"
     assert len(result["features"]) == 1
+    # Pairwise stability is suppressed for multiclass without --positive-class
+    # because the integer code order is arbitrary; the verdict must not gate
+    # on a stability_min coming from ordinal coding.
+    summary = result["features"][0]["summary"]
+    assert "stability_min" not in summary
+    assert "stability_mean" not in summary
+
+
+def test_pipeline_regression_keeps_stability(regression_df):
+    result = run_analysis(
+        df=regression_df, time_col="month", target_col="target", features=["x"],
+        feature_kinds={"x": "numeric"}, granularity="month", binning_method="tree",
+    )
+    # Regression keeps stability — the metric is well-defined for continuous y.
+    summary = result["features"][0]["summary"]
+    assert "stability_min" in summary
+    assert "stability_mean" in summary
 
 
 def test_pipeline_quantile_method(binary_df):

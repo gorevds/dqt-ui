@@ -38,7 +38,7 @@ def bucket_time(s: pd.Series, granularity: Granularity = "auto") -> pd.Series:
         granularity = infer_time_granularity(s)
 
     if granularity == "as_is" or not _is_datetimelike(s):
-        as_str = s.astype(str)
+        as_str = s.astype("string")
         cats = sorted(as_str.dropna().unique().tolist())
         return pd.Categorical(as_str, categories=cats, ordered=True)
 

@@ -1,9 +1,13 @@
 """Heuristics for guessing time / target columns from a fresh DataFrame."""
 from __future__ import annotations
 
+import logging
+import warnings
 from typing import Iterable, Optional
 
 import pandas as pd
+
+_log = logging.getLogger(__name__)
 
 _TIME_HINTS = (
     "date", "time", "datetime", "timestamp", "period", "month", "year",
@@ -29,12 +33,18 @@ def autodetect_time_column(df: pd.DataFrame) -> Optional[str]:
         elif pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s):
             sample = s.dropna().head(50)
             if len(sample) > 0:
+                # pandas emits UserWarning when the sample doesn't share a
+                # common datetime format — that's noise during column scan,
+                # not a problem we can act on. Suppress only here.
                 try:
-                    parsed = pd.to_datetime(sample, errors="coerce")
-                    if parsed.notna().mean() > 0.8:
-                        score += 70
-                except Exception:
-                    pass
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        parsed = pd.to_datetime(sample, errors="coerce")
+                except (ValueError, TypeError, OverflowError) as exc:
+                    _log.debug("autodetect: %s skipped, datetime parse failed: %s", col, exc)
+                    parsed = None
+                if parsed is not None and parsed.notna().mean() > 0.8:
+                    score += 70
         name = str(col).lower()
         if any(h in name for h in _TIME_HINTS):
             score += 30

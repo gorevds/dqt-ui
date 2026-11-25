@@ -2,7 +2,7 @@
 
 Defaults reflect the banking convention (PSI 0.10 / 0.25). Override per feature
 or per environment by pointing ``DQT_CONFIG=/path/to/config.yaml`` or by
-passing ``thresholds=...`` to ``analyze()``.
+passing ``config=...`` to ``analyze()``.
 
 Example config file::
 
@@ -57,7 +57,7 @@ class Config:
     @classmethod
     def load(cls, path: Optional[Union[str, Path]] = None) -> "Config":
         """Load config from YAML/JSON. Falls back to defaults when path missing."""
-        path = path or os.environ.get("DQT_CONFIG")
+        path = path or os.environ.get("DQT_CONFIG") or os.environ.get("DQT_THRESHOLDS_PATH")
         if not path:
             return cls()
         p = Path(path)
@@ -78,6 +78,35 @@ class Config:
 
 
 DEFAULT = Config()
+
+
+def for_workspace(slug: Optional[str]) -> Config:
+    """Resolve the active config for a workspace, falling back to ``DEFAULT``.
+
+    A workspace can store a YAML override in its ``severity_yaml`` field —
+    that wins over ``DQT_CONFIG`` and over the global default. Useful when
+    risk and fraud teams share an instance but want different thresholds.
+    """
+    if not slug:
+        return Config.load()
+    try:
+        from dqt.workspaces import get as _ws_get
+    except ImportError:  # pragma: no cover — circular guard
+        return DEFAULT
+    rec = _ws_get(slug)
+    if not rec or not rec.get("severity_yaml"):
+        return Config.load()
+    try:
+        import yaml  # optional dep
+    except ImportError:
+        # Fall through: no YAML loader, but the YAML *might* be valid JSON.
+        try:
+            raw = json.loads(rec["severity_yaml"])
+        except json.JSONDecodeError:
+            return DEFAULT
+        return Config.from_dict(raw)
+    raw = yaml.safe_load(rec["severity_yaml"]) or {}
+    return Config.from_dict(raw)
 
 
 def severity_for(

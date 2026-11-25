@@ -12,16 +12,16 @@ from dqt.core.target_utils import TargetKind
 
 
 def psi(actual: np.ndarray, expected: np.ndarray, bins: int = 10, eps: float = 1e-4) -> float:
-    """Population Stability Index = sum((a-e) * log(a/e)) over quantile bins of `actual`."""
+    """Population Stability Index = sum((a-e) * log(a/e)) over quantile bins of the reference (`expected`)."""
     actual = np.asarray(actual, dtype=float)
     expected = np.asarray(expected, dtype=float)
     actual = actual[np.isfinite(actual)]
     expected = expected[np.isfinite(expected)]
     if len(actual) == 0 or len(expected) == 0:
         return float("nan")
-    edges = np.unique(np.quantile(actual, np.linspace(0, 1, bins + 1)))
-    if len(edges) < 2:
-        return 0.0
+    # Keep both tails, even when the reference is constant or discrete.
+    quantiles = np.unique(np.quantile(expected, np.linspace(0, 1, bins + 1)))
+    edges = np.unique(np.r_[-np.inf, quantiles, np.nextafter(quantiles[-1], np.inf), np.inf])
     a_hist, _ = np.histogram(actual, bins=edges)
     e_hist, _ = np.histogram(expected, bins=edges)
     a_pct = np.where(a_hist == 0, eps, a_hist / a_hist.sum())
@@ -155,39 +155,75 @@ def feature_distribution_over_time(
 def pairwise_bin_stability(
     bins_rate: pd.DataFrame,
     time_col: str,
+    target_kind: TargetKind = TargetKind.BINARY,
 ) -> pd.DataFrame:
     """Per-period mean of Φ(z) over all bin pairs — 0..1, higher = more separated.
 
-    For binary targets only. Input is the output of bins_target_rate_over_time:
-    a long table with columns [time_col, bin, rate, count]. For each time bucket
-    we take all unique bin pairs, compute the two-proportion z-statistic, push
-    it through the standard-normal CDF (so the result is bounded 0..1) and
-    average across pairs. Stable features keep this score close to 1 across
-    every period; if bins start to overlap or invert, the score drops.
+    Input is the output of ``bins_target_rate_over_time``: a long table with
+    columns ``[time_col, bin, rate, count, se]``. For each time bucket we take
+    all unique bin pairs, compute a z-statistic, push it through the standard-
+    normal CDF (so the result is bounded 0..1) and average across pairs. Stable
+    features keep this score close to 1 across every period; if bins start to
+    overlap, the score drops. inversion_share tracks reversed pairs relative
+    to the first period. Pairs tied or absent in the reference are excluded.
+
+    The z-statistic depends on ``target_kind``:
+
+    * ``BINARY`` — two-proportion pooled z-test on the bin's success rate.
+    * ``REGRESSION`` — two-mean z-test using the per-bin standard error of
+      the mean, ``z = |m1 - m2| / sqrt(se1**2 + se2**2)``. Multiclass targets
+      are nominal: don't read distance between classes as meaningful — prefer
+      ``--positive-class`` (CLI) / one-vs-rest binarisation upstream.
     """
     if bins_rate.empty:
         return pd.DataFrame(columns=[time_col, "stability"])
+    has_se = "se" in bins_rate.columns
+    if target_kind == TargetKind.REGRESSION and not has_se:
+        return pd.DataFrame(columns=[time_col, "stability", "inversion_share"])
     rows = []
+    reference_rates = None
     for bucket, sub in bins_rate.groupby(time_col, observed=True):
         bins = sub["bin"].tolist()
         rates = sub.set_index("bin")["rate"]
-        counts = sub.set_index("bin")["count"]
+        if reference_rates is None:
+            reference_rates = rates
         if len(bins) < 2:
             continue
+        # ``rate`` is a proportion in the binary branch and a mean in the
+        # regression branch — treat them generically as ``v`` (value) below.
+        lookup = sub.set_index("bin")
+        values = lookup["rate"]
+        counts = lookup["count"]
+        ses = lookup["se"] if has_se else None
         confs = []
+        inversions = 0
+        comparable = 0
         for b1, b2 in combinations(bins, 2):
             n1, n2 = float(counts[b1]), float(counts[b2])
             if n1 < 1 or n2 < 1:
                 continue
-            p1, p2 = float(rates[b1]), float(rates[b2])
-            p_pool = (p1 * n1 + p2 * n2) / (n1 + n2)
-            denom = np.sqrt(p_pool * (1 - p_pool) * (1 / n1 + 1 / n2))
-            if denom == 0:
+            v1, v2 = float(values[b1]), float(values[b2])
+            if b1 in reference_rates and b2 in reference_rates:
+                direction = reference_rates[b1] - reference_rates[b2]
+                if direction != 0:
+                    comparable += 1
+                    inversions += int(direction * (v1 - v2) < 0)
+            if target_kind == TargetKind.BINARY:
+                p_pool = (v1 * n1 + v2 * n2) / (n1 + n2)
+                denom = np.sqrt(p_pool * (1 - p_pool) * (1 / n1 + 1 / n2))
+            else:
+                # Regression / multiclass-as-regression: two-mean z using SE.
+                if ses is None:
+                    continue
+                se1, se2 = float(ses[b1]), float(ses[b2])
+                denom = np.sqrt(se1 * se1 + se2 * se2)
+            if not np.isfinite(denom) or denom == 0:
                 continue
-            z = abs(p1 - p2) / denom
+            z = abs(v1 - v2) / denom
             confs.append(stats.norm.cdf(z))
-        if confs:
-            rows.append({time_col: str(bucket), "stability": float(np.mean(confs))})
+        if confs or comparable:
+            rows.append({time_col: str(bucket), "stability": float(np.mean(confs)) if confs else np.nan,
+                         "inversion_share": inversions / comparable if comparable else np.nan})
     return pd.DataFrame(rows)
 
 
@@ -204,6 +240,8 @@ def stability_summary(
     else:
         summary["rate_range"] = float("nan")
     if pairwise_stability is not None and not pairwise_stability.empty:
+        if "inversion_share" in pairwise_stability and pairwise_stability["inversion_share"].notna().any():
+            summary["inversion_share_max"] = float(pairwise_stability["inversion_share"].max())
         s = pairwise_stability["stability"]
         summary["stability_mean"] = float(s.mean())
         summary["stability_min"] = float(s.min())

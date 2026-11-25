@@ -13,24 +13,15 @@ from dqt.notify import post as notify_post
 
 
 def _read_file(path: Path, engine: str = "auto") -> pd.DataFrame:
-    name = path.name.lower()
-    if name.endswith((".csv", ".tsv", ".txt")):
-        sep = "\t" if name.endswith(".tsv") else None
-        if sep is None:
-            return pd.read_csv(path, sep=None, engine="python")
-        return pd.read_csv(path, sep=sep)
-    if name.endswith((".parquet", ".pq")):
-        if engine == "duckdb":
-            try:
-                import duckdb  # type: ignore
-            except ImportError as exc:
-                raise SystemExit(
-                    "--engine duckdb requires duckdb (`pip install duckdb`)"
-                ) from exc
-            # Glob-friendly: handles both single files and directories of parquet.
-            return duckdb.query(f"SELECT * FROM '{path}'").to_df()
-        return pd.read_parquet(path)
-    raise SystemExit(f"Unsupported file extension: {path}")
+    """Thin CLI wrapper around :func:`dqt.io.read_file` that translates
+    library-level errors into argparse-friendly ``SystemExit``.
+    """
+    from dqt.io import read_file
+
+    try:
+        return read_file(path, engine=engine)
+    except (ImportError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _apply_filters(df: pd.DataFrame, args) -> pd.DataFrame:
@@ -60,18 +51,13 @@ def _apply_filters(df: pd.DataFrame, args) -> pd.DataFrame:
 
 
 def _read_sql(uri: str, table_or_query: str) -> pd.DataFrame:
+    """Thin CLI wrapper around :func:`dqt.io.read_sql`."""
+    from dqt.io import read_sql
+
     try:
-        import sqlalchemy  # type: ignore
+        return read_sql(uri, table_or_query)
     except ImportError as exc:
-        raise SystemExit(
-            "SQL input requires SQLAlchemy (`pip install sqlalchemy` plus the "
-            "driver for your database, e.g. psycopg2-binary / pymysql / snowflake-sqlalchemy)"
-        ) from exc
-    engine = sqlalchemy.create_engine(uri)
-    # If the argument looks like a SELECT, run it as-is; otherwise treat as a table name.
-    if table_or_query.strip().lower().startswith("select"):
-        return pd.read_sql(table_or_query, engine)
-    return pd.read_sql_table(table_or_query, engine)
+        raise SystemExit(str(exc)) from exc
 
 
 
@@ -89,10 +75,25 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--sql-source", default=None,
                     help="Table name or SELECT query when reading from SQL")
     a.add_argument(
+        "--from-dbt", metavar="MANIFEST",
+        help="Path to dbt target/manifest.json. Combined with --dbt-model, "
+             "DQT resolves the model to its warehouse relation and runs "
+             "the analysis against it via --sql-uri.",
+    )
+    a.add_argument(
+        "--dbt-model", metavar="NAME",
+        help="dbt model name to monitor; resolved against --from-dbt manifest.",
+    )
+    a.add_argument(
         "--reference", type=Path, metavar="FILE",
         help="Optional baseline CSV/Parquet. PSI is computed against this "
              "dataset instead of the first/previous time bucket — i.e. compare "
              "every period to a 'golden' reference snapshot.",
+    )
+    a.add_argument(
+        "--reference-baseline", metavar="NAME",
+        help="Name of a registered baseline (see `dqt baseline freeze/list`). "
+             "Mutually exclusive with --reference.",
     )
     a.add_argument(
         "--positive-class", metavar="CLASS",
@@ -100,6 +101,12 @@ def main(argv: list[str] | None = None) -> int:
              "0 = other) and run as a binary analysis. Otherwise the multiclass "
              "is integer-encoded and treated as regression — bin charts will "
              "be less informative.",
+    )
+    a.add_argument(
+        "--score-col", metavar="COLUMN",
+        help="Run score-drift analysis: treat this column as the score (the "
+             "model output) and monitor its drift directly. When --target is "
+             "also given and binary, a per-bucket calibration delta is logged.",
     )
     a.add_argument(
         "--save-run", action="store_true",
@@ -147,6 +154,29 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--port", type=int, default=8050)
     serve.add_argument("--debug", action="store_true")
 
+    sched = sub.add_parser(
+        "schedule",
+        help="Run analyze on a recurring schedule and notify on diffs against the previous run.",
+    )
+    from dqt.schedule import add_arguments as _sched_add_args
+
+    _sched_add_args(sched)
+
+    bl = sub.add_parser("baseline", help="Manage named reference baselines.")
+    bl_sub = bl.add_subparsers(dest="baseline_cmd", required=True)
+    bl_freeze = bl_sub.add_parser("freeze", help="Register a CSV/Parquet as a named baseline.")
+    bl_freeze.add_argument("name", help="baseline name (use as --reference-baseline NAME)")
+    bl_freeze.add_argument("--from", dest="from_path", required=True, type=Path,
+                            help="path to CSV/Parquet to freeze")
+    bl_freeze.add_argument("--description", default=None)
+    bl_freeze.add_argument("--overwrite", action="store_true",
+                            help="replace an existing baseline of the same name")
+    bl_sub.add_parser("list", help="List registered baselines.")
+    bl_show = bl_sub.add_parser("show", help="Show metadata for one baseline.")
+    bl_show.add_argument("name")
+    bl_del = bl_sub.add_parser("delete", help="Delete a baseline.")
+    bl_del.add_argument("name")
+
     runs = sub.add_parser("runs", help="Inspect persistent analysis runs.")
     runs_sub = runs.add_subparsers(dest="runs_cmd", required=True)
     runs_list = runs_sub.add_parser("list", help="List recent saved runs.")
@@ -155,6 +185,38 @@ def main(argv: list[str] | None = None) -> int:
     runs_show.add_argument("id", type=int)
     runs_del = runs_sub.add_parser("delete", help="Delete a run by id.")
     runs_del.add_argument("id", type=int)
+    runs_diff = runs_sub.add_parser(
+        "diff",
+        help="Diff two saved runs: severity transitions, PSI delta, new offenders.",
+    )
+    runs_diff.add_argument("a", type=int, help="older / baseline run id")
+    runs_diff.add_argument("b", type=int, help="newer / current run id")
+    runs_diff.add_argument("--json", action="store_true",
+                            help="emit machine-readable JSON instead of text")
+
+    reg = sub.add_parser("regulatory", help="Render regulatory monitoring reports.")
+    reg_sub = reg.add_subparsers(dest="regulatory_cmd", required=True)
+    reg_sub.add_parser("list", help="List bundled templates.")
+    reg_render = reg_sub.add_parser("render", help="Render a template against a saved run.")
+    reg_render.add_argument("template",
+                              help="template name (`dqt regulatory list` to see options)")
+    reg_render.add_argument("run_id", type=int, help="run to render")
+    reg_render.add_argument("--format", default="md",
+                              choices=["md", "html", "pdf"])
+    reg_render.add_argument("--output", "-o", type=Path, required=True)
+
+    labels = sub.add_parser("labels", help="Late-binding labels: retrofit Gini/AUC onto a saved run.")
+    lab_sub = labels.add_subparsers(dest="labels_cmd", required=True)
+    lab_add = lab_sub.add_parser("add", help="Attach labels to a run.")
+    lab_add.add_argument("run_id", type=int)
+    lab_add.add_argument("--scored", required=True, type=Path,
+                          help="path to CSV/Parquet with score + label columns")
+    lab_add.add_argument("--score-col", required=True)
+    lab_add.add_argument("--label-col", required=True)
+    lab_add.add_argument("--time-col", default=None,
+                          help="optional period column for per-period AUC/Gini/KS")
+    lab_show = lab_sub.add_parser("show", help="Show stored performance metrics for a run.")
+    lab_show.add_argument("run_id", type=int)
 
     args = p.parse_args(argv)
 
@@ -162,6 +224,53 @@ def main(argv: list[str] | None = None) -> int:
         from dqt.app.main import app
         app.run(host=args.host, port=args.port, debug=args.debug)
         return 0
+
+    if args.cmd == "schedule":
+        from dqt.schedule import main as _sched_main
+
+        return _sched_main(args)
+
+    if args.cmd == "baseline":
+        from dqt import baselines as bl_mod
+
+        if args.baseline_cmd == "freeze":
+            df = _read_file(args.from_path)
+            try:
+                rec = bl_mod.freeze(args.name, df,
+                                     description=args.description,
+                                     overwrite=args.overwrite)
+            except KeyError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            print(f"frozen baseline {rec['name']!r}: "
+                  f"{rec['n_rows']:,} rows × {rec['n_cols']} cols "
+                  f"({rec['sha256'][:12]}…)", file=sys.stderr)
+            return 0
+        if args.baseline_cmd == "list":
+            rows = bl_mod.list_baselines()
+            if not rows:
+                print("(no baselines — register one with `dqt baseline freeze NAME --from FILE`)",
+                      file=sys.stderr)
+                return 0
+            for r in rows:
+                desc = (r.get("description") or "").strip()
+                print(f"{r['name']:<24}  {r['created_at']}  "
+                      f"{r['n_rows']:>9,} rows × {r['n_cols']:>3}  "
+                      f"sha={r['sha256'][:8]}  {desc[:60]}")
+            return 0
+        if args.baseline_cmd == "show":
+            rec = bl_mod.get(args.name)
+            if rec is None:
+                print(f"baseline {args.name!r} not found", file=sys.stderr)
+                return 1
+            import json as _json
+            print(_json.dumps(rec, indent=2))
+            return 0
+        if args.baseline_cmd == "delete":
+            ok = bl_mod.delete(args.name)
+            print("deleted" if ok else f"baseline {args.name!r} not found",
+                  file=sys.stderr)
+            return 0 if ok else 1
 
     if args.cmd == "runs":
         from dqt import runs as runs_mod
@@ -191,8 +300,94 @@ def main(argv: list[str] | None = None) -> int:
             print("deleted" if ok else f"run #{args.id} not found",
                   file=sys.stderr)
             return 0 if ok else 1
+        if args.runs_cmd == "diff":
+            from dqt.runs_compare import diff_runs, format_diff_text
+
+            try:
+                d = diff_runs(args.a, args.b)
+            except KeyError as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            if args.json:
+                import json as _json
+                print(_json.dumps(d, indent=2, default=str))
+            else:
+                print(format_diff_text(d))
+            return 0
+
+    if args.cmd == "regulatory":
+        from dqt import labels as labels_mod
+        from dqt import regulatory as reg_mod
+        from dqt.runs import get as runs_get
+
+        if args.regulatory_cmd == "list":
+            for t in reg_mod.list_templates():
+                print(t)
+            return 0
+        if args.regulatory_cmd == "render":
+            run = runs_get(args.run_id)
+            if run is None:
+                print(f"run #{args.run_id} not found", file=sys.stderr)
+                return 1
+            performance = labels_mod.list_for_run(args.run_id)
+            try:
+                rendered = reg_mod.render(
+                    args.template, run,
+                    performance=performance,
+                    output_format=args.format,
+                )
+            except (KeyError, ImportError, ValueError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            mode = "wb" if isinstance(rendered, bytes) else "w"
+            with args.output.open(mode) as fh:
+                fh.write(rendered)
+            print(f"wrote {args.output} ({args.format})", file=sys.stderr)
+            return 0
+
+    if args.cmd == "labels":
+        from dqt import labels as labels_mod
+
+        if args.labels_cmd == "add":
+            df = _read_file(args.scored)
+            rows = labels_mod.attach_labels(
+                args.run_id, scored_df=df,
+                score_col=args.score_col, label_col=args.label_col,
+                time_col=args.time_col,
+            )
+            print(f"attached {len(rows)} period(s) of metrics to run #{args.run_id}",
+                  file=sys.stderr)
+            for r in rows[:6]:
+                print(f"  {r.get('period') or '(global)':<12}  "
+                      f"AUC={(r.get('auc') or 0):.3f}  Gini={(r.get('gini') or 0):.3f}  "
+                      f"KS={(r.get('ks') or 0):.3f}  n={r.get('n')}",
+                      file=sys.stderr)
+            return 0
+        if args.labels_cmd == "show":
+            rows = labels_mod.list_for_run(args.run_id)
+            if not rows:
+                print(f"(no performance metrics for run #{args.run_id})",
+                      file=sys.stderr)
+                return 0
+            import json as _json
+            print(_json.dumps(rows, indent=2, default=str))
+            return 0
 
     if args.cmd == "analyze":
+        # dbt resolution: turn --from-dbt + --dbt-model into a --sql-source.
+        if args.from_dbt or args.dbt_model:
+            from dqt.integrations.dbt import cli_resolve
+
+            resolved = cli_resolve(args.from_dbt, args.dbt_model)
+            if resolved is None:
+                raise SystemExit("--from-dbt and --dbt-model must be given together")
+            if not args.sql_uri:
+                raise SystemExit("--from-dbt requires --sql-uri (SQLAlchemy URL to your warehouse)")
+            if args.sql_source:
+                raise SystemExit("--from-dbt is mutually exclusive with --sql-source; "
+                                 "DQT generates the SELECT itself")
+            args.sql_source = resolved
+
         if args.input is not None:
             df = _read_file(args.input, engine=args.engine)
             source_label = str(args.input)
@@ -200,7 +395,8 @@ def main(argv: list[str] | None = None) -> int:
             if not args.sql_source:
                 raise SystemExit("--sql-uri requires --sql-source (table name or SELECT query)")
             df = _read_sql(args.sql_uri, args.sql_source)
-            source_label = f"sql:{args.sql_source}"
+            source_label = (f"dbt:{args.dbt_model}" if args.dbt_model
+                            else f"sql:{args.sql_source}")
         else:
             raise SystemExit("Pass an input file path or --sql-uri")
         print(f"→ {source_label}: {len(df):,} rows × {len(df.columns)} cols",
@@ -211,10 +407,22 @@ def main(argv: list[str] | None = None) -> int:
         if df.empty:
             raise SystemExit("After --from/--to/--filter no rows remain")
 
-        reference_df = _read_file(args.reference) if args.reference else None
-        if reference_df is not None:
+        if args.reference and args.reference_baseline:
+            raise SystemExit("--reference and --reference-baseline are mutually exclusive")
+        reference_df = None
+        if args.reference:
+            reference_df = _read_file(args.reference)
             print(f"  reference: {args.reference} ({len(reference_df):,} rows)",
                   file=sys.stderr)
+        elif args.reference_baseline:
+            from dqt import baselines as bl_mod
+
+            try:
+                reference_df = bl_mod.load(args.reference_baseline)
+            except (KeyError, FileNotFoundError) as exc:
+                raise SystemExit(str(exc)) from exc
+            print(f"  reference baseline: {args.reference_baseline!r} "
+                  f"({len(reference_df):,} rows)", file=sys.stderr)
 
         # Binarize a multiclass target against the chosen positive class.
         if args.positive_class is not None and args.target:
@@ -228,19 +436,36 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  binarized target → 1 = {args.positive_class!r}, 0 = other",
                   file=sys.stderr)
 
-        report = analyze(
-            df,
-            time_col=args.time,
-            target_col=args.target,
-            features=args.features,
-            granularity=args.granularity,
-            binning_method=args.method,
-            max_bins=args.max_bins,
-            min_samples_leaf=args.min_samples_leaf,
-            psi_reference=args.psi_reference,
-            outlier_method=args.outlier_method,
-            reference_df=reference_df,
-        )
+        if args.score_col:
+            from dqt.score_drift import analyze_score, has_calibration_drift
+
+            score_out = analyze_score(
+                df, score_col=args.score_col,
+                target_col=args.target, time_col=args.time,
+                granularity=args.granularity, max_bins=args.max_bins,
+                psi_reference=args.psi_reference, reference_df=reference_df,
+            )
+            report = score_out["score_report"]
+            calibration = score_out["calibration"]
+            if has_calibration_drift(calibration):
+                print(
+                    "  ! calibration drift detected (>5pp swing in some bucket)",
+                    file=sys.stderr,
+                )
+        else:
+            report = analyze(
+                df,
+                time_col=args.time,
+                target_col=args.target,
+                features=args.features,
+                granularity=args.granularity,
+                binning_method=args.method,
+                max_bins=args.max_bins,
+                min_samples_leaf=args.min_samples_leaf,
+                psi_reference=args.psi_reference,
+                outlier_method=args.outlier_method,
+                reference_df=reference_df,
+            )
         m = report.meta
         print(f"  time={m['time_col']}  target={m['target_col']}  "
               f"features={len(report.features)}", file=sys.stderr)

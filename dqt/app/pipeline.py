@@ -24,6 +24,7 @@ from dqt.plots import (
     plot_outlier_share_over_time,
     plot_target_rate_per_bin_over_time,
 )
+from dqt.plugins import FeatureContext, apply_plugins, discover_metrics
 
 
 def run_analysis(
@@ -49,9 +50,9 @@ def run_analysis(
     feature is computed against that baseline instead of against the first /
     previous bucket of the input.
     """
-    from dqt.config import DEFAULT
+    from dqt.config import Config
     if config is None:
-        config = DEFAULT
+        config = Config.load()
     work = df.copy()
 
     info = detect_target_kind(work[target_col])
@@ -68,7 +69,8 @@ def run_analysis(
     work["__time__"] = bucket_time(work[time_col], granularity=granularity)
     # Trees require both inputs present; drop only after bucketing so that
     # invalid datetimes are also filtered out as NaN buckets.
-    work = work[work["__time__"].notna() & work[target_col].notna()].copy()
+    valid = work["__time__"].notna() & work[target_col].notna()
+    work = work.loc[valid].copy()
     if work.empty:
         raise ValueError("No rows left after dropping NaN time/target")
 
@@ -95,6 +97,7 @@ def run_analysis(
     binned["__time__"] = work["__time__"].values
     binned[target_col] = work[target_col].values
 
+    plugin_metrics = discover_metrics()
     feature_blocks = []
     summary_rows = []
     for feat in features:
@@ -122,19 +125,37 @@ def run_analysis(
         else:
             fig_outl = None
 
-        # Pairwise z-score stability is meaningful only for binary targets
-        # (the formula assumes two-proportion comparison).
-        pairwise = (pairwise_bin_stability(rate, "__time__")
-                    if binner_target_kind == TargetKind.BINARY else None)
+        # Stability uses two-proportion z-test for binary targets and a
+        # two-mean z-test (mean diff / pooled SE) for regression. Multiclass
+        # without --positive-class is integer-coded into ordinal codes; the
+        # resulting stability number depends on the (arbitrary) code order
+        # and is misleading. Compute pairwise for binary/regression only.
+        if info_kind == TargetKind.MULTICLASS:
+            pairwise = None
+        else:
+            pairwise = pairwise_bin_stability(rate, "__time__", target_kind=binner_target_kind)
 
-        fig_bin_shares = plot_bin_shares_over_time(rate, "__time__", psi_df=psi_t)
+        thresholds = config.for_feature(feat)
+        fig_bin_shares = plot_bin_shares_over_time(rate, "__time__", psi_df=psi_t, psi_red=thresholds.psi_red)
         fig_rate = plot_target_rate_per_bin_over_time(rate, "__time__", stability_df=pairwise)
         fig_summary = plot_bins_summary(rate)
 
         miss = missingness_over_time(work, feat, "__time__")
         summ = stability_summary(rate, psi_t, pairwise)
+        # Plugin metrics get a stable view of the feature so they can compute
+        # IV / Gini / monotonicity / etc. and contribute keys to ``summ``.
+        if plugin_metrics:
+            ctx = FeatureContext(
+                df=work, feature=feat, time_col="__time__",
+                target_col=target_col, target_kind=binner_target_kind,
+                is_numeric=is_numeric, bins_rate=rate, psi_table=psi_t,
+            )
+            apply_plugins(plugin_metrics, ctx, summ)
+        miss_max = float(miss["missing_share"].max()) if not miss.empty else 0.0
+        summ["missing_share_max"] = miss_max
+        severity = _severity_for(summ, miss, thresholds=thresholds)
         summary_rows.append({"feature": feat, "type": kind, **summ,
-                             "missing_share_max": float(miss["missing_share"].max()) if not miss.empty else 0.0})
+                             "severity": severity})
 
         figs = {
             "bin_shares": fig_bin_shares,
@@ -144,13 +165,12 @@ def run_analysis(
         }
 
         binner_result = binner.result(feat)
-        miss_max = float(miss["missing_share"].max()) if not miss.empty else 0.0
         # Drill-down: collect first N original rows per (bin, time-bucket).
         samples: dict = {}
         if drill_samples > 0:
             keep_cols = [c for c in [feat, target_col, time_col]
                          if c in df.columns]
-            joined = df[keep_cols].copy()
+            joined = df.loc[valid, keep_cols].copy()
             joined["__bin__"] = binned[feat].values
             joined["__time__"] = binned["__time__"].values
             for (bucket, bin_label), grp in joined.groupby(
@@ -165,8 +185,9 @@ def run_analysis(
             "summary": summ,
             "figs": figs,
             "bin_descriptions": binner_result.bin_descriptions,
-            "severity": _severity_for(summ, miss, thresholds=config.for_feature(feat)),
-            "verdict": _verdict_for(summ, miss_max, fig_outl is not None),
+            "severity": severity,
+            "thresholds": thresholds,
+            "verdict": _verdict_for(summ, miss_max, fig_outl is not None, thresholds),
             "samples": samples,
         })
 
@@ -189,31 +210,37 @@ def _infer_kind(s: pd.Series) -> str:
     return "categorical"
 
 
-def _verdict_for(summary: dict, miss_max: float, has_outliers: bool) -> str:
-    """Short human-readable summary line per feature."""
-    parts = []
+def _verdict_for(summary: dict, miss_max: float, has_outliers: bool, thresholds) -> str:
+    """Short human-readable summary line per feature.
+
+    Strings come from ``dqt.i18n`` so the verdict can be localised via
+    ``DQT_VERDICT_LOCALE`` without touching pipeline logic.
+    """
+    from dqt.i18n import t
+
+    parts: list[str] = []
     psi_max = summary.get("psi_max")
     if isinstance(psi_max, (int, float)) and psi_max == psi_max:
-        if psi_max > 0.25:
-            parts.append(f"large drift (PSI peak {psi_max:.2f})")
-        elif psi_max > 0.1:
-            parts.append(f"some drift (PSI peak {psi_max:.2f})")
+        if psi_max > thresholds.psi_red:
+            parts.append(t("verdict.psi.large", value=psi_max))
+        elif psi_max > thresholds.psi_yellow:
+            parts.append(t("verdict.psi.some", value=psi_max))
         else:
-            parts.append(f"distribution stable (PSI peak {psi_max:.2f})")
+            parts.append(t("verdict.psi.stable", value=psi_max))
     stability_min = summary.get("stability_min")
     if isinstance(stability_min, (int, float)) and stability_min == stability_min:
-        if stability_min < 0.6:
-            parts.append(f"bins overlap in worst period ({stability_min:.2f})")
-        elif stability_min < 0.8:
-            parts.append(f"bins narrow in worst period ({stability_min:.2f})")
+        if stability_min < thresholds.stability_red:
+            parts.append(t("verdict.stability.overlap", value=stability_min))
+        elif stability_min < thresholds.stability_yellow:
+            parts.append(t("verdict.stability.narrow", value=stability_min))
         else:
-            parts.append("bins well-separated across periods")
-    if miss_max > 0.5:
-        parts.append(f"high missingness up to {miss_max:.0%}")
-    elif miss_max > 0.2:
-        parts.append(f"missingness up to {miss_max:.0%}")
+            parts.append(t("verdict.stability.separated"))
+    if miss_max > thresholds.missing_red:
+        parts.append(t("verdict.missing.high", value=miss_max))
+    elif miss_max > thresholds.missing_yellow:
+        parts.append(t("verdict.missing.some", value=miss_max))
     if has_outliers:
-        parts.append("outliers detected")
+        parts.append(t("verdict.outliers"))
     return ". ".join(p[0].upper() + p[1:] for p in parts) + ("." if parts else "")
 
 
