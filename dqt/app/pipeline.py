@@ -50,9 +50,9 @@ def run_analysis(
     feature is computed against that baseline instead of against the first /
     previous bucket of the input.
     """
-    from dqt.config import DEFAULT
+    from dqt.config import Config
     if config is None:
-        config = DEFAULT
+        config = Config.load()
     work = df.copy()
 
     info = detect_target_kind(work[target_col])
@@ -69,7 +69,8 @@ def run_analysis(
     work["__time__"] = bucket_time(work[time_col], granularity=granularity)
     # Trees require both inputs present; drop only after bucketing so that
     # invalid datetimes are also filtered out as NaN buckets.
-    work = work[work["__time__"].notna() & work[target_col].notna()].copy()
+    valid = work["__time__"].notna() & work[target_col].notna()
+    work = work.loc[valid].copy()
     if work.empty:
         raise ValueError("No rows left after dropping NaN time/target")
 
@@ -134,7 +135,8 @@ def run_analysis(
         else:
             pairwise = pairwise_bin_stability(rate, "__time__", target_kind=binner_target_kind)
 
-        fig_bin_shares = plot_bin_shares_over_time(rate, "__time__", psi_df=psi_t)
+        thresholds = config.for_feature(feat)
+        fig_bin_shares = plot_bin_shares_over_time(rate, "__time__", psi_df=psi_t, psi_red=thresholds.psi_red)
         fig_rate = plot_target_rate_per_bin_over_time(rate, "__time__", stability_df=pairwise)
         fig_summary = plot_bins_summary(rate)
 
@@ -149,8 +151,11 @@ def run_analysis(
                 is_numeric=is_numeric, bins_rate=rate, psi_table=psi_t,
             )
             apply_plugins(plugin_metrics, ctx, summ)
+        miss_max = float(miss["missing_share"].max()) if not miss.empty else 0.0
+        summ["missing_share_max"] = miss_max
+        severity = _severity_for(summ, miss, thresholds=thresholds)
         summary_rows.append({"feature": feat, "type": kind, **summ,
-                             "missing_share_max": float(miss["missing_share"].max()) if not miss.empty else 0.0})
+                             "severity": severity})
 
         figs = {
             "bin_shares": fig_bin_shares,
@@ -160,13 +165,12 @@ def run_analysis(
         }
 
         binner_result = binner.result(feat)
-        miss_max = float(miss["missing_share"].max()) if not miss.empty else 0.0
         # Drill-down: collect first N original rows per (bin, time-bucket).
         samples: dict = {}
         if drill_samples > 0:
             keep_cols = [c for c in [feat, target_col, time_col]
                          if c in df.columns]
-            joined = df[keep_cols].copy()
+            joined = df.loc[valid, keep_cols].copy()
             joined["__bin__"] = binned[feat].values
             joined["__time__"] = binned["__time__"].values
             for (bucket, bin_label), grp in joined.groupby(
@@ -181,8 +185,9 @@ def run_analysis(
             "summary": summ,
             "figs": figs,
             "bin_descriptions": binner_result.bin_descriptions,
-            "severity": _severity_for(summ, miss, thresholds=config.for_feature(feat)),
-            "verdict": _verdict_for(summ, miss_max, fig_outl is not None),
+            "severity": severity,
+            "thresholds": thresholds,
+            "verdict": _verdict_for(summ, miss_max, fig_outl is not None, thresholds),
             "samples": samples,
         })
 
@@ -205,7 +210,7 @@ def _infer_kind(s: pd.Series) -> str:
     return "categorical"
 
 
-def _verdict_for(summary: dict, miss_max: float, has_outliers: bool) -> str:
+def _verdict_for(summary: dict, miss_max: float, has_outliers: bool, thresholds) -> str:
     """Short human-readable summary line per feature.
 
     Strings come from ``dqt.i18n`` so the verdict can be localised via
@@ -216,23 +221,23 @@ def _verdict_for(summary: dict, miss_max: float, has_outliers: bool) -> str:
     parts: list[str] = []
     psi_max = summary.get("psi_max")
     if isinstance(psi_max, (int, float)) and psi_max == psi_max:
-        if psi_max > 0.25:
+        if psi_max > thresholds.psi_red:
             parts.append(t("verdict.psi.large", value=psi_max))
-        elif psi_max > 0.1:
+        elif psi_max > thresholds.psi_yellow:
             parts.append(t("verdict.psi.some", value=psi_max))
         else:
             parts.append(t("verdict.psi.stable", value=psi_max))
     stability_min = summary.get("stability_min")
     if isinstance(stability_min, (int, float)) and stability_min == stability_min:
-        if stability_min < 0.6:
+        if stability_min < thresholds.stability_red:
             parts.append(t("verdict.stability.overlap", value=stability_min))
-        elif stability_min < 0.8:
+        elif stability_min < thresholds.stability_yellow:
             parts.append(t("verdict.stability.narrow", value=stability_min))
         else:
             parts.append(t("verdict.stability.separated"))
-    if miss_max > 0.5:
+    if miss_max > thresholds.missing_red:
         parts.append(t("verdict.missing.high", value=miss_max))
-    elif miss_max > 0.2:
+    elif miss_max > thresholds.missing_yellow:
         parts.append(t("verdict.missing.some", value=miss_max))
     if has_outliers:
         parts.append(t("verdict.outliers"))

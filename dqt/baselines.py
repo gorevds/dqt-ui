@@ -16,8 +16,10 @@ parquet) so listing is cheap; the parquet is loaded on demand.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import sqlite3
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -73,40 +75,32 @@ def freeze(name: str, df: pd.DataFrame, description: Optional[str] = None,
         raise ValueError("baseline name must be non-empty")
     out_dir = baselines_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
-    parquet_path = out_dir / f"{_safe_basename(name)}.parquet"
-    cols_json = ",".join(map(str, df.columns))
-
-    with _conn() as c:
-        existing = c.execute(
-            "SELECT parquet FROM baselines WHERE name=?", (name,),
-        ).fetchone()
-        if existing is not None and not overwrite:
-            raise KeyError(
-                f"baseline {name!r} already exists; pass overwrite=True to replace"
-            )
-        # Now safe to write the parquet. If overwrite is replacing an entry
-        # at a different path (renamed sanitisation, manually-moved file),
-        # remove the old file after writing the new one.
+    parquet_path = out_dir / f"{uuid.uuid4().hex}.parquet"
+    old_path = None
+    try:
         df.to_parquet(parquet_path, index=False)
         digest = _sha256(parquet_path)
-        if existing is not None:
-            old_parquet = Path(existing[0])
-            if old_parquet.resolve() != parquet_path.resolve():
-                try:
-                    old_parquet.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            c.execute("DELETE FROM baselines WHERE name=?", (name,))
-        c.execute(
-            "INSERT INTO baselines (name, created_at, n_rows, n_cols, columns, "
-            "sha256, description, parquet) VALUES (?,?,?,?,?,?,?,?)",
-            (
-                name,
-                datetime.utcnow().isoformat(timespec="seconds"),
-                int(len(df)), int(len(df.columns)),
-                cols_json, digest, description, str(parquet_path),
-            ),
-        )
+        with _conn() as c:
+            c.execute("BEGIN IMMEDIATE")
+            existing = c.execute("SELECT parquet FROM baselines WHERE name=?", (name,)).fetchone()
+            if existing and not overwrite:
+                raise KeyError(f"baseline {name!r} already exists; pass overwrite=True to replace")
+            if existing:
+                old_path = existing[0]
+            created_at = datetime.utcnow().isoformat(timespec="seconds")
+            columns = list(map(str, df.columns))
+            c.execute(
+                "INSERT OR REPLACE INTO baselines (name, created_at, n_rows, n_cols, columns, "
+                "sha256, description, parquet) VALUES (?,?,?,?,?,?,?,?)",
+                (name, created_at, len(df), len(columns), ",".join(columns), digest, description, str(parquet_path)),
+            )
+            if old_path and c.execute("SELECT 1 FROM baselines WHERE parquet=?", (old_path,)).fetchone():
+                old_path = None
+    except Exception:
+        parquet_path.unlink(missing_ok=True)
+        raise
+    if old_path:
+        _remove_unreferenced(old_path)
     try:
         from dqt import events
         events.dispatch("baseline.frozen",
@@ -114,7 +108,8 @@ def freeze(name: str, df: pd.DataFrame, description: Optional[str] = None,
                           "n_cols": int(len(df.columns)), "sha256": digest})
     except Exception:  # noqa: BLE001
         pass
-    return get(name)  # type: ignore[return-value]
+    return {"name": name, "created_at": created_at, "n_rows": len(df), "n_cols": len(columns),
+            "columns": columns, "sha256": digest, "description": description, "parquet": str(parquet_path)}
 
 
 def list_baselines() -> list[dict]:
@@ -146,42 +141,48 @@ def get(name: str) -> Optional[dict]:
 
 def load(name: str) -> pd.DataFrame:
     """Load the DataFrame for baseline ``name``. Raises if missing."""
-    record = get(name)
-    if record is None:
-        raise KeyError(f"baseline {name!r} not found")
-    parquet = Path(record["parquet"])
-    if not parquet.exists():
-        raise FileNotFoundError(
-            f"baseline {name!r} metadata exists but parquet missing at {parquet}"
-        )
-    return pd.read_parquet(parquet)
+    # Open the file inside the read transaction so a concurrent replacement
+    # cannot unlink the selected snapshot before the reader has a descriptor.
+    with _conn() as c:
+        c.execute("BEGIN")
+        row = c.execute("SELECT parquet, sha256 FROM baselines WHERE name=?", (name,)).fetchone()
+        if row is None:
+            raise KeyError(f"baseline {name!r} not found")
+        handle = Path(row[0]).open("rb")
+    with handle:
+        if _digest(handle) != row[1]:
+            raise ValueError(f"baseline {name!r} checksum mismatch")
+        handle.seek(0)
+        return pd.read_parquet(handle)
 
 
 def delete(name: str) -> bool:
-    """Delete a baseline (DB row + parquet file). Returns True if removed."""
     with _conn() as c:
-        row = c.execute(
-            "SELECT parquet FROM baselines WHERE name=?", (name,),
-        ).fetchone()
+        c.execute("BEGIN IMMEDIATE")
+        row = c.execute("SELECT parquet FROM baselines WHERE name=?", (name,)).fetchone()
         if row is None:
             return False
-        try:
-            Path(row[0]).unlink(missing_ok=True)
-        except OSError:
-            pass
         c.execute("DELETE FROM baselines WHERE name=?", (name,))
+        shared = c.execute("SELECT 1 FROM baselines WHERE parquet=?", (row[0],)).fetchone()
+    if not shared:
+        _remove_unreferenced(row[0])
     return True
 
 
-def _safe_basename(name: str) -> str:
-    """Sanitise a baseline name for use as a filename."""
-    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in name)
-    return safe[:80] or "baseline"
+def _remove_unreferenced(path):
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        logging.getLogger(__name__).exception("Could not remove retired baseline %s", path)
 
 
 def _sha256(path: Path) -> str:
-    h = hashlib.sha256()
     with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1 << 20), b""):
-            h.update(chunk)
+        return _digest(fh)
+
+
+def _digest(fh) -> str:
+    h = hashlib.sha256()
+    for chunk in iter(lambda: fh.read(1 << 20), b""):
+        h.update(chunk)
     return h.hexdigest()
